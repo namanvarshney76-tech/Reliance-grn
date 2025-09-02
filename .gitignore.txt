@@ -1,0 +1,28 @@
+# Created by venv; see https://docs.python.org/3/library/venv.html
+
+# Ignore all files in the downloads directory
+downloads/
+
+# Credentials
+credentials.json
+token.json
+app_logs.json
+token_gmail.json
+token_drive.json
+token_combined.json
+
+# Virtual environment files
+venv/
+pyvenv.cfg
+
+# Python
+__pycache__/
+*.pyc
+
+# Environment variables
+.env
+
+# Logs
+*.log
+ 
+ 

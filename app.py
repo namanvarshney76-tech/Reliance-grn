@@ -774,20 +774,20 @@ def main():
     # Initialize session state for configuration
     if 'gmail_config' not in st.session_state:
         st.session_state.gmail_config = {
-            'sender': "noreply@reliance.com",  # Updated for Reliance
-            'search_term': "Reliance GRN",  # Updated for Reliance
+            'sender': "DONOTREPLY@ril.com",  # Updated for Reliance
+            'search_term': "grn",  # Updated for Reliance
             'days_back': 7,
             'max_results': 1000,
-            'attachment_filter': "attachment.pdf",
-            'gdrive_folder_id': "1euqxO-meY4Ahszpdk3XbwlRwvkfSlY8k"  # Placeholder, update as needed
+            'attachment_filter': "",
+            'gdrive_folder_id': "1YH8bT01X0C03SbgFF8qWO49Tv85Xd5UU"  # Placeholder, update as needed
         }
     
     if 'pdf_config' not in st.session_state:
         st.session_state.pdf_config = {
-            'drive_folder_id': "1aUjRMqWjVDDAsQw0TugwgmwYjxP6W7DT",  # Placeholder, update as needed
-            'llama_api_key': "llx-ZBUTlOe0JLY3ny0FSs5mSJTMgOZU7RV3x3TGyQPNQQ0XPhyO",  # Placeholder
+            'drive_folder_id': "1CKPlXQcQsvGDWmpINVj8lpKI7G9VG1Yv",  # Placeholder, update as needed
+            'llama_api_key': "llx-rK35vMeW6MVmM9nVpbfdMfiZZzRoBmrLsC3EfiCm1qamfQ5p",  # Placeholder
             'llama_agent': "Reliance Agent",  # Updated for Reliance
-            'spreadsheet_id': "1B1C2ILnIMXpEYbQzaSkhRzEP2gmgE2YLRNqoX98GwcU",  # Placeholder, update as needed
+            'spreadsheet_id': "1zlJaRur0K50ZLFQhxxmvfFVA3l4Whpe9XWgi1E-HFhg",  # Placeholder, update as needed
             'sheet_range': "reliancegrn",  # Updated for Reliance
             'days_back': 1
         }

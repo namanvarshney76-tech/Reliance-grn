@@ -161,7 +161,8 @@ class RelianceAutomation:
             query_parts.append(f"after:{start_date.strftime('%Y/%m/%d')}")
            
             query = " ".join(query_parts)
-            st.info(f"Searching Gmail with query: {query}")
+            with st.session_state.lock:
+                st.session_state.logs.append(f"INFO: Searching Gmail with query: {query}")
            
             # Execute search
             result = self.gmail_service.users().messages().list(
@@ -169,28 +170,35 @@ class RelianceAutomation:
             ).execute()
            
             messages = result.get('messages', [])
-            st.info(f"Gmail search returned {len(messages)} messages")
+            with st.session_state.lock:
+                st.session_state.logs.append(f"INFO: Gmail search returned {len(messages)} messages")
            
             # Debug: Show some email details
             if messages:
-                st.info("Sample emails found:")
+                with st.session_state.lock:
+                    st.session_state.logs.append("INFO: Sample emails found:")
                 for i, msg in enumerate(messages[:3]): # Show first 3 emails
                     try:
                         email_details = self._get_email_details(msg['id'])
-                        st.write(f" {i+1}. {email_details['subject']} from {email_details['sender']}")
+                        with st.session_state.lock:
+                            st.session_state.logs.append(f"INFO:  {i+1}. {email_details['subject']} from {email_details['sender']}")
                     except:
-                        st.write(f" {i+1}. Email ID: {msg['id']}")
+                        with st.session_state.lock:
+                            st.session_state.logs.append(f"INFO:  {i+1}. Email ID: {msg['id']}")
            
             return messages
            
         except Exception as e:
-            st.error(f"Email search failed: {str(e)}")
+            with st.session_state.lock:
+                st.session_state.logs.append(f"ERROR: Email search failed: {str(e)}")
             return []
    
-    def process_gmail_workflow(self, config: dict, progress_bar, status_text, log_container):
+    def process_gmail_workflow(self, config: dict):
         """Process Gmail attachment download workflow"""
         try:
-            status_text.text("Starting Gmail workflow...")
+            with st.session_state.lock:
+                st.session_state.status = "Starting Gmail workflow..."
+                st.session_state.progress = 25
            
             # Search for emails
             emails = self.search_emails(
@@ -200,38 +208,45 @@ class RelianceAutomation:
                 max_results=config['max_results']
             )
            
-            progress_bar.progress(25)
+            with st.session_state.lock:
+                st.session_state.progress = 25
            
             if not emails:
-                st.warning("No emails found matching criteria")
+                with st.session_state.lock:
+                    st.session_state.logs.append("WARNING: No emails found matching criteria")
                 return {'success': True, 'processed': 0}
            
-            status_text.text(f"Found {len(emails)} emails. Processing attachments...")
-            st.info(f"Found {len(emails)} emails matching criteria")
+            with st.session_state.lock:
+                st.session_state.status = f"Found {len(emails)} emails. Processing attachments..."
+                st.session_state.logs.append(f"INFO: Found {len(emails)} emails matching criteria")
            
             # Create base folder in Drive
             base_folder_name = "Gmail_Attachments"
             base_folder_id = self._create_drive_folder(base_folder_name, config.get('gdrive_folder_id'))
            
             if not base_folder_id:
-                st.error("Failed to create base folder in Google Drive")
+                with st.session_state.lock:
+                    st.session_state.logs.append("ERROR: Failed to create base folder in Google Drive")
                 return {'success': False, 'processed': 0}
            
-            progress_bar.progress(50)
+            with st.session_state.lock:
+                st.session_state.progress = 50
            
             processed_count = 0
             total_attachments = 0
            
             for i, email in enumerate(emails):
                 try:
-                    status_text.text(f"Processing email {i+1}/{len(emails)}")
+                    with st.session_state.lock:
+                        st.session_state.status = f"Processing email {i+1}/{len(emails)}"
                    
                     # Get email details first
                     email_details = self._get_email_details(email['id'])
                     subject = email_details.get('subject', 'No Subject')[:50]
                     sender = email_details.get('sender', 'Unknown')
                    
-                    st.info(f"Processing email: {subject} from {sender}")
+                    with st.session_state.lock:
+                        st.session_state.logs.append(f"INFO: Processing email: {subject} from {sender}")
                    
                     # Get full message with payload
                     message = self.gmail_service.users().messages().get(
@@ -239,7 +254,8 @@ class RelianceAutomation:
                     ).execute()
                    
                     if not message or not message.get('payload'):
-                        st.warning(f"No payload found for email: {subject}")
+                        with st.session_state.lock:
+                            st.session_state.logs.append(f"WARNING: No payload found for email: {subject}")
                         continue
                    
                     # Extract attachments
@@ -250,23 +266,29 @@ class RelianceAutomation:
                     total_attachments += attachment_count
                     if attachment_count > 0:
                         processed_count += 1
-                        st.success(f"Found {attachment_count} attachments in: {subject}")
+                        with st.session_state.lock:
+                            st.session_state.logs.append(f"SUCCESS: Found {attachment_count} attachments in: {subject}")
                     else:
-                        st.info(f"No matching attachments in: {subject}")
+                        with st.session_state.lock:
+                            st.session_state.logs.append(f"INFO: No matching attachments in: {subject}")
                    
                     progress = 50 + (i + 1) / len(emails) * 45
-                    progress_bar.progress(int(progress))
+                    with st.session_state.lock:
+                        st.session_state.progress = int(progress)
                    
                 except Exception as e:
-                    st.error(f"Failed to process email {email.get('id', 'unknown')}: {str(e)}")
+                    with st.session_state.lock:
+                        st.session_state.logs.append(f"ERROR: Failed to process email {email.get('id', 'unknown')}: {str(e)}")
            
-            progress_bar.progress(100)
-            status_text.text(f"Gmail workflow completed! Processed {total_attachments} attachments from {processed_count} emails")
+            with st.session_state.lock:
+                st.session_state.progress = 100
+                st.session_state.status = f"Gmail workflow completed! Processed {total_attachments} attachments from {processed_count} emails"
            
             return {'success': True, 'processed': total_attachments}
            
         except Exception as e:
-            st.error(f"Gmail workflow failed: {str(e)}")
+            with st.session_state.lock:
+                st.session_state.logs.append(f"ERROR: Gmail workflow failed: {str(e)}")
             return {'success': False, 'processed': 0}
    
     def _get_email_details(self, message_id: str) -> Dict:
@@ -288,7 +310,8 @@ class RelianceAutomation:
             return details
            
         except Exception as e:
-            st.error(f"Failed to get email details for {message_id}: {str(e)}")
+            with st.session_state.lock:
+                st.session_state.logs.append(f"ERROR: Failed to get email details for {message_id}: {str(e)}")
             return {'id': message_id, 'sender': 'Unknown', 'subject': 'Unknown', 'date': ''}
    
     def _create_drive_folder(self, folder_name: str, parent_folder_id: Optional[str] = None) -> str:
@@ -322,7 +345,8 @@ class RelianceAutomation:
             return folder.get('id')
            
         except Exception as e:
-            st.error(f"Failed to create folder {folder_name}: {str(e)}")
+            with st.session_state.lock:
+                st.session_state.logs.append(f"ERROR: Failed to create folder {folder_name}: {str(e)}")
             return ""
    
     def _extract_attachments_from_email(self, message_id: str, payload: Dict, config: dict, base_folder_id: str) -> int:
@@ -381,13 +405,16 @@ class RelianceAutomation:
                         fields='id'
                     ).execute()
                    
-                    st.info(f"Uploaded: {final_filename}")
+                    with st.session_state.lock:
+                        st.session_state.logs.append(f"INFO: Uploaded: {final_filename}")
                     processed_count = 1
                 else:
-                    st.info(f"File already exists, skipping: {final_filename}")
+                    with st.session_state.lock:
+                        st.session_state.logs.append(f"INFO: File already exists, skipping: {final_filename}")
                
             except Exception as e:
-                st.error(f"Failed to process attachment {filename}: {str(e)}")
+                with st.session_state.lock:
+                    st.session_state.logs.append(f"ERROR: Failed to process attachment {filename}: {str(e)}")
        
         return processed_count
    
@@ -433,14 +460,16 @@ class RelianceAutomation:
         except:
             return False
    
-    def process_pdf_workflow(self, config: dict, progress_bar, status_text, log_container):
+    def process_pdf_workflow(self, config: dict):
         """Process PDF workflow with LlamaParse"""
         try:
             if not LLAMA_AVAILABLE:
-                st.error("LlamaParse not available. Install with: pip install llama-cloud-services")
+                with st.session_state.lock:
+                    st.session_state.logs.append("ERROR: LlamaParse not available. Install with: pip install llama-cloud-services")
                 return {'success': False, 'processed': 0}
            
-            status_text.text("Starting PDF processing workflow...")
+            with st.session_state.lock:
+                st.session_state.status = "Starting PDF processing workflow..."
            
             # Setup LlamaParse
             os.environ["LLAMA_CLOUD_API_KEY"] = config['llama_api_key']
@@ -448,20 +477,24 @@ class RelianceAutomation:
             agent = extractor.get_agent(name=config['llama_agent'])
            
             if agent is None:
-                st.error(f"Could not find agent '{config['llama_agent']}'. Check LlamaParse dashboard.")
+                with st.session_state.lock:
+                    st.session_state.logs.append(f"ERROR: Could not find agent '{config['llama_agent']}'. Check LlamaParse dashboard.")
                 return {'success': False, 'processed': 0}
            
-            progress_bar.progress(20)
+            with st.session_state.lock:
+                st.session_state.progress = 20
            
             # List PDF files from Drive
             pdf_files = self._list_drive_files(config['drive_folder_id'], config['days_back'])
            
             if not pdf_files:
-                st.warning("No PDF files found in the specified folder")
+                with st.session_state.lock:
+                    st.session_state.logs.append("WARNING: No PDF files found in the specified folder")
                 return {'success': True, 'processed': 0}
            
-            progress_bar.progress(40)
-            status_text.text(f"Found {len(pdf_files)} PDF files. Processing...")
+            with st.session_state.lock:
+                st.session_state.progress = 40
+                st.session_state.status = f"Found {len(pdf_files)} PDF files. Processing..."
            
             # Get sheet info
             sheet_name = config['sheet_range'].split('!')[0]
@@ -469,7 +502,8 @@ class RelianceAutomation:
             processed_count = 0
             for i, file in enumerate(pdf_files):
                 try:
-                    status_text.text(f"Processing PDF {i+1}/{len(pdf_files)}: {file['name']}")
+                    with st.session_state.lock:
+                        st.session_state.status = f"Processing PDF {i+1}/{len(pdf_files)}: {file['name']}"
                    
                     # Download PDF
                     pdf_data = self._download_from_drive(file['id'], file['name'])
@@ -493,18 +527,22 @@ class RelianceAutomation:
                         processed_count += 1
                    
                     progress = 40 + (i + 1) / len(pdf_files) * 55
-                    progress_bar.progress(int(progress))
+                    with st.session_state.lock:
+                        st.session_state.progress = int(progress)
                    
                 except Exception as e:
-                    st.error(f"Failed to process PDF {file['name']}: {str(e)}")
+                    with st.session_state.lock:
+                        st.session_state.logs.append(f"ERROR: Failed to process PDF {file['name']}: {str(e)}")
            
-            progress_bar.progress(100)
-            status_text.text(f"PDF workflow completed! Processed {processed_count} PDFs")
+            with st.session_state.lock:
+                st.session_state.progress = 100
+                st.session_state.status = f"PDF workflow completed! Processed {processed_count} PDFs"
            
             return {'success': True, 'processed': processed_count}
            
         except Exception as e:
-            st.error(f"PDF workflow failed: {str(e)}")
+            with st.session_state.lock:
+                st.session_state.logs.append(f"ERROR: PDF workflow failed: {str(e)}")
             return {'success': False, 'processed': 0}
    
     def _list_drive_files(self, folder_id: str, days_back: int) -> List[Dict]:
@@ -534,7 +572,8 @@ class RelianceAutomation:
            
             return all_files
         except Exception as e:
-            st.error(f"Failed to list files: {str(e)}")
+            with st.session_state.lock:
+                st.session_state.logs.append(f"ERROR: Failed to list files: {str(e)}")
             return []
    
     def _download_from_drive(self, file_id: str, file_name: str) -> bytes:
@@ -543,7 +582,8 @@ class RelianceAutomation:
             request = self.drive_service.files().get_media(fileId=file_id)
             return request.execute()
         except Exception as e:
-            st.error(f"Failed to download {file_name}: {str(e)}")
+            with st.session_state.lock:
+                st.session_state.logs.append(f"ERROR: Failed to download {file_name}: {str(e)}")
             return b""
    
     def _process_extracted_data(self, extracted_data: Dict, file_info: Dict) -> List[Dict]:
@@ -565,7 +605,8 @@ class RelianceAutomation:
                 item["processed_date"] = time.strftime("%Y-%m-%d %H:%M:%S")
                 item["drive_file_id"] = file_info['id']
         else:
-            st.warning(f"Skipping (no 'items' key found): {file_info['name']}")
+            with st.session_state.lock:
+                st.session_state.logs.append(f"WARNING: Skipping (no 'items' key found): {file_info['name']}")
             return rows
        
         # Clean items and add to rows
@@ -624,7 +665,8 @@ class RelianceAutomation:
                 self._append_to_google_sheet(spreadsheet_id, sheet_name, values)
            
         except Exception as e:
-            st.error(f"Failed to save to sheets: {str(e)}")
+            with st.session_state.lock:
+                st.session_state.logs.append(f"ERROR: Failed to save to sheets: {str(e)}")
    
     def _get_sheet_headers(self, spreadsheet_id: str, sheet_name: str) -> List[str]:
         """Get existing headers from Google Sheet"""
@@ -637,7 +679,8 @@ class RelianceAutomation:
             values = result.get('values', [])
             return values[0] if values else []
         except Exception as e:
-            st.info(f"No existing headers found: {str(e)}")
+            with st.session_state.lock:
+                st.session_state.logs.append(f"INFO: No existing headers found: {str(e)}")
             return []
    
     def _update_headers(self, spreadsheet_id: str, sheet_name: str, headers: List[str]) -> bool:
@@ -650,10 +693,12 @@ class RelianceAutomation:
                 valueInputOption='USER_ENTERED',
                 body=body
             ).execute()
-            st.info(f"Updated headers with {len(headers)} columns")
+            with st.session_state.lock:
+                st.session_state.logs.append(f"INFO: Updated headers with {len(headers)} columns")
             return True
         except Exception as e:
-            st.error(f"Failed to update headers: {str(e)}")
+            with st.session_state.lock:
+                st.session_state.logs.append(f"ERROR: Failed to update headers: {str(e)}")
             return False
    
     def _get_sheet_id(self, spreadsheet_id: str, sheet_name: str) -> int:
@@ -663,10 +708,12 @@ class RelianceAutomation:
             for sheet in metadata.get('sheets', []):
                 if sheet['properties']['title'] == sheet_name:
                     return sheet['properties']['sheetId']
-            st.warning(f"Sheet '{sheet_name}' not found")
+            with st.session_state.lock:
+                st.session_state.logs.append(f"WARNING: Sheet '{sheet_name}' not found")
             return 0
         except Exception as e:
-            st.error(f"Failed to get sheet metadata: {str(e)}")
+            with st.session_state.lock:
+                st.session_state.logs.append(f"ERROR: Failed to get sheet metadata: {str(e)}")
             return 0
    
     def _get_sheet_data(self, spreadsheet_id: str, sheet_name: str) -> List[List[str]]:
@@ -679,7 +726,8 @@ class RelianceAutomation:
             ).execute()
             return result.get('values', [])
         except Exception as e:
-            st.error(f"Failed to get sheet data: {str(e)}")
+            with st.session_state.lock:
+                st.session_state.logs.append(f"ERROR: Failed to get sheet data: {str(e)}")
             return []
    
     def _replace_rows_for_file(self, spreadsheet_id: str, sheet_name: str, file_id: str,
@@ -699,7 +747,8 @@ class RelianceAutomation:
             try:
                 file_id_col = current_headers.index('drive_file_id')
             except ValueError:
-                st.info("No 'drive_file_id' column found, appending new rows")
+                with st.session_state.lock:
+                    st.session_state.logs.append("INFO: No 'drive_file_id' column found, appending new rows")
                 values_to_append = [[row.get(h, "") for h in headers] for row in new_rows]
                 return self._append_to_google_sheet(spreadsheet_id, sheet_name, values_to_append)
            
@@ -731,14 +780,16 @@ class RelianceAutomation:
                         spreadsheetId=spreadsheet_id,
                         body=body
                     ).execute()
-                    st.info(f"Deleted {len(rows_to_delete)} existing rows for file {file_id}")
+                    with st.session_state.lock:
+                        st.session_state.logs.append(f"INFO: Deleted {len(rows_to_delete)} existing rows for file {file_id}")
            
             # Append new rows
             values_to_append = [[row.get(h, "") for h in headers] for row in new_rows]
             return self._append_to_google_sheet(spreadsheet_id, sheet_name, values_to_append)
            
         except Exception as e:
-            st.error(f"Failed to replace rows: {str(e)}")
+            with st.session_state.lock:
+                st.session_state.logs.append(f"ERROR: Failed to replace rows: {str(e)}")
             return False
    
     def _append_to_google_sheet(self, spreadsheet_id: str, range_name: str, values: List[List[Any]]) -> bool:
@@ -757,14 +808,17 @@ class RelianceAutomation:
                 ).execute()
                
                 updated_cells = result.get('updates', {}).get('updatedCells', 0)
-                st.info(f"Appended {updated_cells} cells to Google Sheet")
+                with st.session_state.lock:
+                    st.session_state.logs.append(f"INFO: Appended {updated_cells} cells to Google Sheet")
                 return True
             except Exception as e:
                 if attempt < max_retries:
-                    st.warning(f"Failed to append to Google Sheet (attempt {attempt}/{max_retries}): {str(e)}")
+                    with st.session_state.lock:
+                        st.session_state.logs.append(f"WARNING: Failed to append to Google Sheet (attempt {attempt}/{max_retries}): {str(e)}")
                     time.sleep(wait_time)
                 else:
-                    st.error(f"Failed to append to Google Sheet after {max_retries} attempts: {str(e)}")
+                    with st.session_state.lock:
+                        st.session_state.logs.append(f"ERROR: Failed to append to Google Sheet after {max_retries} attempts: {str(e)}")
                     return False
         return False
 def main():
@@ -849,14 +903,17 @@ def main():
     with col1:
         if st.button("Gmail Workflow Only", use_container_width=True):
             st.session_state.workflow = "gmail"
+            st.rerun()
    
     with col2:
         if st.button("PDF Workflow Only", use_container_width=True):
             st.session_state.workflow = "pdf"
+            st.rerun()
    
     with col3:
         if st.button("Combined Workflow", use_container_width=True):
             st.session_state.workflow = "combined"
+            st.rerun()
    
     # Initialize session state for workflow
     if 'workflow' not in st.session_state:
@@ -892,66 +949,93 @@ def main():
         auth_progress = st.progress(0)
         auth_status = st.empty()
        
-        if automation.authenticate_from_secrets(auth_progress, auth_status):
+        authenticated = automation.authenticate_from_secrets(auth_progress, auth_status)
+       
+        if authenticated:
             st.success("Authentication successful!")
            
             # Workflow execution section
             st.header("Workflow Execution")
            
-            # Progress tracking
             main_progress = st.progress(0)
             main_status = st.empty()
+            log_container = st.container()
            
-            # Log container
-            st.subheader("Real-time Logs")
-            log_container = st.empty()
-           
-            if st.session_state.workflow == "gmail":
-                result = automation.process_gmail_workflow(
-                    st.session_state.gmail_config, main_progress, main_status, log_container
-                )
-                if result['success']:
-                    st.success(f"Gmail workflow completed! Processed {result['processed']} attachments")
-                else:
-                    st.error("Gmail workflow failed")
-           
-            elif st.session_state.workflow == "pdf":
-                result = automation.process_pdf_workflow(
-                    st.session_state.pdf_config, main_progress, main_status, log_container
-                )
-                if result['success']:
-                    st.success(f"PDF workflow completed! Processed {result['processed']} PDFs")
-                else:
-                    st.error("PDF workflow failed")
-           
-            elif st.session_state.workflow == "combined":
-                st.info("Running combined workflow...")
+            if 'running' not in st.session_state:
+                st.session_state.running = True
+                st.session_state.progress = 0
+                st.session_state.status = ""
+                st.session_state.logs = []
+                st.session_state.lock = threading.Lock()
+                st.session_state.result = None
                
-                # Step 1: Gmail workflow
-                st.subheader("Step 1: Gmail Attachment Download")
-                gmail_result = automation.process_gmail_workflow(
-                    st.session_state.gmail_config, main_progress, main_status, log_container
-                )
+                def run_workflow():
+                    try:
+                        if st.session_state.workflow == "gmail":
+                            result = automation.process_gmail_workflow(st.session_state.gmail_config)
+                            with st.session_state.lock:
+                                st.session_state.result = result
+                        elif st.session_state.workflow == "pdf":
+                            result = automation.process_pdf_workflow(st.session_state.pdf_config)
+                            with st.session_state.lock:
+                                st.session_state.result = result
+                        elif st.session_state.workflow == "combined":
+                            with st.session_state.lock:
+                                st.session_state.logs.append("INFO: Running combined workflow...")
+                                st.session_state.status = "Running Gmail workflow..."
+                            gmail_result = automation.process_gmail_workflow(st.session_state.gmail_config)
+                            if gmail_result['success']:
+                                with st.session_state.lock:
+                                    st.session_state.logs.append(f"SUCCESS: Gmail step completed! Processed {gmail_result['processed']} attachments")
+                                    st.session_state.status = "Running PDF workflow..."
+                                time.sleep(2)
+                                pdf_result = automation.process_pdf_workflow(st.session_state.pdf_config)
+                                with st.session_state.lock:
+                                    st.session_state.result = {'gmail': gmail_result, 'pdf': pdf_result}
+                            else:
+                                with st.session_state.lock:
+                                    st.session_state.logs.append("ERROR: Gmail step failed - stopping combined workflow")
+                                    st.session_state.result = {'gmail': gmail_result}
+                    except Exception as e:
+                        with st.session_state.lock:
+                            st.session_state.logs.append(f"ERROR: Workflow failed: {str(e)}")
+                            st.session_state.result = {'success': False}
+                    finally:
+                        with st.session_state.lock:
+                            st.session_state.running = False
                
-                if gmail_result['success']:
-                    st.success(f"Gmail step completed! Processed {gmail_result['processed']} attachments")
-                   
-                    # Small delay
-                    time.sleep(2)
-                   
-                    # Step 2: PDF processing
-                    st.subheader("Step 2: PDF Processing")
-                    pdf_result = automation.process_pdf_workflow(
-                        st.session_state.pdf_config, main_progress, main_status, log_container
-                    )
-                   
-                    if pdf_result['success']:
-                        st.success(f"Combined workflow completed successfully!")
-                        st.balloons()
+                st.session_state.thread = threading.Thread(target=run_workflow)
+                st.session_state.thread.start()
+                st.rerun()
+           
+            if 'running' in st.session_state:
+                with st.session_state.lock:
+                    current_progress = st.session_state.progress
+                    current_status = st.session_state.status
+                    current_logs = st.session_state.logs.copy()
+               
+                main_progress.progress(current_progress)
+                main_status.text(current_status)
+               
+                with log_container:
+                    st.text_area("Real-time Logs", "\n".join(current_logs[-50:]), height=200)
+               
+                if st.session_state.thread.is_alive():
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    if st.session_state.result and st.session_state.result.get('success', False):
+                        st.success("Workflow completed successfully!")
+                        if st.session_state.workflow == "gmail":
+                            st.success(f"Gmail workflow completed! Processed {st.session_state.result['processed']} attachments")
+                        elif st.session_state.workflow == "pdf":
+                            st.success(f"PDF workflow completed! Processed {st.session_state.result['processed']} PDFs")
+                        elif st.session_state.workflow == "combined":
+                            st.success(f"Combined workflow completed! Gmail: {st.session_state.result['gmail']['processed']} attachments, PDF: {st.session_state.result['pdf']['processed']} PDFs")
                     else:
-                        st.error("PDF processing step failed")
-                else:
-                    st.error("Gmail step failed - stopping combined workflow")
+                        st.error("Workflow failed")
+                    del st.session_state.running
+                    del st.session_state.thread
        
         # Reset workflow with confirmation
         st.markdown("---")

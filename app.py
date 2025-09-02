@@ -514,13 +514,25 @@ class RelianceAutomation:
             start_str = start_datetime.strftime('%Y-%m-%dT00:00:00Z')
             query = f"'{folder_id}' in parents and mimeType='application/pdf' and trashed=false and createdTime >= '{start_str}'"
            
-            results = self.drive_service.files().list(
-                q=query,
-                fields="files(id, name, mimeType, createdTime, modifiedTime)",
-                orderBy="createdTime desc"
-            ).execute()
+            all_files = []
+            page_token = None
+            while True:
+                results = self.drive_service.files().list(
+                    q=query,
+                    fields="nextPageToken, files(id, name, mimeType, createdTime, modifiedTime)",
+                    orderBy="createdTime desc",
+                    pageSize=1000,
+                    pageToken=page_token
+                ).execute()
+               
+                files = results.get('files', [])
+                all_files.extend(files)
+               
+                page_token = results.get('nextPageToken', None)
+                if page_token is None:
+                    break
            
-            return results.get('files', [])
+            return all_files
         except Exception as e:
             st.error(f"Failed to list files: {str(e)}")
             return []

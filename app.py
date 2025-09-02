@@ -1,4 +1,4 @@
-```python
+
 #!/usr/bin/env python3
 """
 Streamlit App for Reliance Automation Workflows

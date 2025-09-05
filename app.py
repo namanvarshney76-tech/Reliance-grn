@@ -1232,7 +1232,7 @@ def main():
             elif msg['type'] == 'status':
                 st.session_state.workflow_state['status'] = msg['text']
             elif msg['type'] == 'info':
-                st.session_state.workflow_state['logs'].append(f"INFO: {msg['helantext']}")
+                st.session_state.workflow_state['logs'].append(f"INFO: {msg['text']}")  # Fixed typo: 'helantext' to 'text'
             elif msg['type'] == 'warning':
                 st.session_state.workflow_state['logs'].append(f"WARNING: {msg['text']}")
             elif msg['type'] == 'error':

@@ -861,6 +861,7 @@ def run_workflow_in_background(automation, workflow_type, gmail_config, pdf_conf
             automation.process_pdf_workflow(pdf_config, progress_queue)
             automation.log("Combined workflow completed successfully!", "SUCCESS")
             progress_queue.put({'type': 'success', 'text': "Combined workflow completed successfully!"})
+            progress_queue.put({'type': 'done', 'result': {'success': True, 'processed': 0}})
     except Exception as e:
         automation.log(f"Workflow execution failed: {str(e)}", "ERROR")
         progress_queue.put({'type': 'error', 'text': f"Workflow execution failed: {str(e)}"})
@@ -881,7 +882,7 @@ def main():
             'sender': "DONOTREPLY@ril.com",
             'search_term': "grn",
             'days_back': 7,
-            'max_results': 1000,
+            'max_results': 500,  # Changed from 1000 to 500 to match max_value
             'gdrive_folder_id': "1YH8bT01X0C03SbgFF8qWO49Tv85Xd5UU"
         }
 
@@ -928,7 +929,7 @@ def main():
         gmail_sender = st.text_input("Sender Email", value=st.session_state.gmail_config['sender'])
         gmail_search = st.text_input("Search Term", value=st.session_state.gmail_config['search_term'])
         gmail_days = st.number_input("Days Back", value=st.session_state.gmail_config['days_back'], min_value=1)
-        gmail_max = st.number_input("Max Results", value=st.session_state.gmail_config['max_results'], min_value=1)
+        gmail_max = st.number_input("Max Results", value=min(st.session_state.gmail_config['max_results'], 500), min_value=1, max_value=500)
         gmail_folder = st.text_input("Google Drive Folder ID", value=st.session_state.gmail_config['gdrive_folder_id'])
         gmail_submit = st.form_submit_button("Update Gmail Settings")
         if gmail_submit:
@@ -991,7 +992,7 @@ def main():
                     "Maximum emails to process",
                     min_value=1,
                     max_value=500,
-                    value=st.session_state.gmail_config['max_results'],
+                    value=min(st.session_state.gmail_config['max_results'], 500),  # Clamp value to max_value
                     help="Maximum number of emails to process",
                     key="gmail_max_results"
                 )

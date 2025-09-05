@@ -764,7 +764,7 @@ def main():
     st.title("🤖 Reliance Automation Workflows")
     st.markdown("### Gmail to Drive & PDF to Excel Processing")
 
-    # Initialize automation instance in session state at the start
+    # Initialize automation instance
     if 'automation' not in st.session_state:
         st.session_state.automation = RelianceAutomation()
     automation = st.session_state.automation
@@ -775,7 +775,7 @@ def main():
             'sender': "DONOTREPLY@ril.com",
             'search_term': "grn",
             'days_back': 7,
-            'max_results': 1000,
+            'max_results': 500,  # Changed to 500 to match max_value
             'gdrive_folder_id': "1YH8bT01X0C03SbgFF8qWO49Tv85Xd5UU"
         }
 

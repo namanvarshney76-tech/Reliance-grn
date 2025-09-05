@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """
 Streamlit App for Reliance Automation Workflows
@@ -507,6 +506,10 @@ class RelianceAutomation:
             # List PDF files from Drive
             pdf_files = self._list_drive_files(config['drive_folder_id'], config['days_back'], progress_queue)
             
+            # Limit to max_files if specified
+            if 'max_files' in config:
+                pdf_files = pdf_files[:config['max_files']]
+            
             if not pdf_files:
                 progress_queue.put({'type': 'warning', 'text': "No PDF files found in the specified folder"})
                 progress_queue.put({'type': 'done', 'result': {'success': True, 'processed': 0}})
@@ -515,12 +518,30 @@ class RelianceAutomation:
             progress_queue.put({'type': 'status', 'text': f"Found {len(pdf_files)} PDF files. Processing..."})
             
             # Get sheet info
+            spreadsheet_id = config['spreadsheet_id']
             sheet_name = config['sheet_range'].split('!')[0]
+            
+            # Fetch existing sheet data once to check processed files
+            values = self._get_sheet_data(spreadsheet_id, sheet_name, progress_queue)
+            existing_file_ids = set()
+            if values and len(values) >= 1:
+                current_headers = values[0]
+                try:
+                    file_id_col = current_headers.index('drive_file_id')
+                    for row in values[1:]:
+                        if len(row) > file_id_col and row[file_id_col]:
+                            existing_file_ids.add(row[file_id_col])
+                except ValueError:
+                    progress_queue.put({'type': 'info', 'text': "No 'drive_file_id' column found in sheet, processing all files"})
             
             processed_count = 0
             for i, file in enumerate(pdf_files):
                 if file['id'] in self.processed_pdfs:
-                    progress_queue.put({'type': 'info', 'text': f"Skipping already processed PDF: {file['name']}"})
+                    progress_queue.put({'type': 'info', 'text': f"Skipping already processed PDF (local state): {file['name']}"})
+                    continue
+                
+                if file['id'] in existing_file_ids:
+                    progress_queue.put({'type': 'info', 'text': f"Skipping already processed in sheet: {file['name']}"})
                     continue
                 
                 try:
@@ -853,7 +874,8 @@ def main():
             'llama_agent': "Reliance Agent",
             'spreadsheet_id': "1zlJaRur0K50ZLFQhxxmvfFVA3l4Whpe9XWgi1E-HFhg",
             'sheet_range': "reliancegrn",
-            'days_back': 1
+            'days_back': 1,
+            'max_files': 50
         }
     
     # Initialize workflow state
@@ -900,6 +922,7 @@ def main():
         pdf_sheet_id = st.text_input("Spreadsheet ID", value=st.session_state.pdf_config['spreadsheet_id'])
         pdf_sheet_range = st.text_input("Sheet Range", value=st.session_state.pdf_config['sheet_range'])
         pdf_days = st.number_input("PDF Days Back", value=st.session_state.pdf_config['days_back'], min_value=1)
+        pdf_max_files = st.number_input("Max Files to Process", value=st.session_state.pdf_config['max_files'], min_value=1)
         
         pdf_submit = st.form_submit_button("Update PDF Settings")
         
@@ -910,7 +933,8 @@ def main():
                 'llama_agent': pdf_agent,
                 'spreadsheet_id': pdf_sheet_id,
                 'sheet_range': pdf_sheet_range,
-                'days_back': pdf_days
+                'days_back': pdf_days,
+                'max_files': pdf_max_files
             }
             st.success("PDF settings updated!")
     
@@ -1064,4 +1088,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -509,15 +509,16 @@ class RelianceAutomation:
             
             # List PDFs
             pdf_files = self._list_drive_files(config['drive_folder_id'], config['days_back'], progress_queue)
+            progress_queue.put({'type': 'info', 'text': f"Found {len(pdf_files)} PDFs in Drive folder"})
             
             # Filter existing if skip_existing
             if config.get('skip_existing', True):
                 existing_ids = self.get_existing_drive_ids(config['spreadsheet_id'], config['sheet_range'], progress_queue)
                 pdf_files = [f for f in pdf_files if f['id'] not in existing_ids]
-                progress_queue.put({'type': 'info', 'text': f"After filtering, {len(pdf_files)} PDFs to process"})
+                progress_queue.put({'type': 'info', 'text': f"After filtering existing, {len(pdf_files)} PDFs to process"})
             
             # Limit max_files
-            max_files = config.get('max_files', None)
+            max_files = config.get('max_files', 50)
             if max_files is not None:
                 pdf_files = pdf_files[:max_files]
                 progress_queue.put({'type': 'info', 'text': f"Limited to {len(pdf_files)} PDFs after max_files limit"})
@@ -525,11 +526,11 @@ class RelianceAutomation:
             progress_queue.put({'type': 'progress', 'value': 25})
             
             if not pdf_files:
-                progress_queue.put({'type': 'warning', 'text': "No PDF files found in folder"})
+                progress_queue.put({'type': 'warning', 'text': "No PDF files found to process"})
                 progress_queue.put({'type': 'done', 'result': {'success': True, 'processed': 0, 'rows_added': 0}})
                 return
             
-            progress_queue.put({'type': 'status', 'text': f"Found {len(pdf_files)} PDFs. Processing..."})
+            progress_queue.put({'type': 'status', 'text': f"Processing {len(pdf_files)} PDFs..."})
             
             # Setup LlamaParse
             os.environ["LLAMA_CLOUD_API_KEY"] = config['llama_api_key']
@@ -558,27 +559,37 @@ class RelianceAutomation:
                         progress_queue.put({'type': 'warning', 'text': f"Failed to download {file['name']}"})
                         continue
                     
+                    progress_queue.put({'type': 'info', 'text': f"Downloaded {file['name']} successfully"})
+                    
                     with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
                         temp_file.write(pdf_data)
                         temp_path = temp_file.name
                     
                     # Extract with LlamaParse
                     result = self._safe_extract(agent, temp_path, progress_queue)
-                    extracted_data = result.data
+                    extracted_data = result.data if result else {}
+                    progress_queue.put({'type': 'info', 'text': f"Extracted data from {file['name']}: {json.dumps(extracted_data, default=str)[:200]}..."})
                     
                     os.unlink(temp_path)
                     
                     # Process extracted data
                     rows = self._process_extracted_data(extracted_data, file)
+                    if not rows:
+                        progress_queue.put({'type': 'warning', 'text': f"No usable data extracted from {file['name']}"})
+                        continue
                     
-                    if rows:
-                        sheet_id = self._get_sheet_id(config['spreadsheet_id'], config['sheet_range'], progress_queue)
-                        self._save_to_sheets(config['spreadsheet_id'], config['sheet_range'], file['id'], rows, sheet_id, progress_queue)
-                        rows_added += len(rows)
-                        processed_count += 1
-                        progress_queue.put({'type': 'success', 'text': f"Processed {file['name']} - added {len(rows)} rows"})
-                    else:
-                        progress_queue.put({'type': 'info', 'text': f"No data extracted from {file['name']}"})
+                    progress_queue.put({'type': 'info', 'text': f"Processed {len(rows)} rows from {file['name']}"})
+                    
+                    # Save to sheets
+                    sheet_id = self._get_sheet_id(config['spreadsheet_id'], config['sheet_range'], progress_queue)
+                    if sheet_id == 0:
+                        progress_queue.put({'type': 'error', 'text': f"Sheet ID not found for {config['sheet_range']}"})
+                        continue
+                    
+                    self._save_to_sheets(config['spreadsheet_id'], config['sheet_range'], file['id'], rows, sheet_id, progress_queue)
+                    rows_added += len(rows)
+                    processed_count += 1
+                    progress_queue.put({'type': 'success', 'text': f"Processed {file['name']} - added {len(rows)} rows to Google Sheet"})
                     
                     # Mark as processed
                     self.processed_pdfs.add(file['id'])
@@ -591,6 +602,7 @@ class RelianceAutomation:
                     progress_queue.put({'type': 'error', 'text': f"Failed to process {file['name']}: {str(e)}"})
             
             progress_queue.put({'type': 'progress', 'value': 100})
+            progress_queue.put({'type': 'status', 'text': f"PDF workflow completed! Processed {processed_count} files, added {rows_added} rows"})
             progress_queue.put({'type': 'done', 'result': {'success': True, 'processed': processed_count, 'rows_added': rows_added}})
             
         except Exception as e:
@@ -641,12 +653,15 @@ class RelianceAutomation:
         """Retry-safe extraction"""
         for attempt in range(1, retries + 1):
             try:
-                return agent.extract(file_path)
+                result = agent.extract(file_path)
+                progress_queue.put({'type': 'info', 'text': f"Extraction attempt {attempt} successful for {file_path}"})
+                return result
             except Exception as e:
                 if attempt < retries:
-                    progress_queue.put({'type': 'warning', 'text': f"Extraction attempt {attempt} failed: {str(e)} - retrying..."})
+                    progress_queue.put({'type': 'warning', 'text': f"Extraction attempt {attempt} failed for {file_path}: {str(e)} - retrying..."})
                     time.sleep(wait_time)
                 else:
+                    progress_queue.put({'type': 'error', 'text': f"Extraction failed after {retries} attempts for {file_path}: {str(e)}"})
                     raise e
     
     def _process_extracted_data(self, extracted_data: Dict, file_info: Dict) -> List[Dict]:
@@ -654,42 +669,49 @@ class RelianceAutomation:
         rows = []
         items = []
         
+        progress_queue.put({'type': 'info', 'text': f"Raw extracted data: {json.dumps(extracted_data, default=str)[:200]}..."})
+        
+        # Handle different possible structures of extracted data
         if "items" in extracted_data:
             items = extracted_data["items"]
-            for item in items:
-                item["po_number"] = self._get_value(extracted_data, ["purchase_order_number", "po_number", "PO No"])
-                item["vendor_invoice_number"] = self._get_value(extracted_data, ["supplier_bill_number", "vendor_invoice_number", "invoice_number"])
-                item["supplier"] = self._get_value(extracted_data, ["supplier", "vendor", "Supplier Name"])
-                item["shipping_address"] = self._get_value(extracted_data, ["Shipping Address", "receiver_address", "shipping_address"])
-                item["grn_date"] = self._get_value(extracted_data, ["delivered_on", "grn_date"])
-                item["source_file"] = file_info['name']
-                item["processed_date"] = time.strftime("%Y-%m-%d %H:%M:%S")
-                item["drive_file_id"] = file_info['id']
         elif "product_items" in extracted_data:
             items = extracted_data["product_items"]
-            for item in items:
-                item["po_number"] = self._get_value(extracted_data, ["purchase_order_number", "po_number", "PO No"])
-                item["vendor_invoice_number"] = self._get_value(extracted_data, ["supplier_bill_number", "vendor_invoice_number", "invoice_number"])
-                item["supplier"] = self._get_value(extracted_data, ["supplier", "vendor", "Supplier Name"])
-                item["shipping_address"] = self._get_value(extracted_data, ["Shipping Address", "receiver_address", "shipping_address"])
-                item["grn_date"] = self._get_value(extracted_data, ["delivered_on", "grn_date"])
-                item["source_file"] = file_info['name']
-                item["processed_date"] = time.strftime("%Y-%m-%d %H:%M:%S")
-                item["drive_file_id"] = file_info['id']
+        elif isinstance(extracted_data, list):
+            items = extracted_data
         else:
+            progress_queue.put({'type': 'warning', 'text': f"Unexpected data structure: {list(extracted_data.keys())}"})
             return rows
         
-        # Clean items and add to rows
-        for item in items:
-            cleaned_item = {k: v for k, v in item.items() if v not in ["", None]}
-            rows.append(cleaned_item)
+        # Ensure items is a list
+        if not isinstance(items, list):
+            progress_queue.put({'type': 'warning', 'text': f"Items is not a list: {type(items)}"})
+            return rows
         
+        # Default fields to include in each row
+        default_fields = {
+            "po_number": self._get_value(extracted_data, ["purchase_order_number", "po_number", "PO No"], ""),
+            "vendor_invoice_number": self._get_value(extracted_data, ["supplier_bill_number", "vendor_invoice_number", "invoice_number"], ""),
+            "supplier": self._get_value(extracted_data, ["supplier", "vendor", "Supplier Name"], ""),
+            "shipping_address": self._get_value(extracted_data, ["Shipping Address", "receiver_address", "shipping_address"], ""),
+            "grn_date": self._get_value(extracted_data, ["delivered_on", "grn_date"], ""),
+            "source_file": file_info['name'],
+            "processed_date": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "drive_file_id": file_info['id']
+        }
+        
+        for item in items:
+            row = default_fields.copy()
+            if isinstance(item, dict):
+                row.update({k: v for k, v in item.items() if v not in ["", None]})
+            rows.append(row)
+        
+        progress_queue.put({'type': 'info', 'text': f"Generated {len(rows)} rows from extracted data"})
         return rows
     
     def _get_value(self, data, possible_keys, default=""):
         """Return the first found key value from dict."""
         for key in possible_keys:
-            if key in data:
+            if key in data and data[key] not in ["", None]:
                 return data[key]
         return default
     
@@ -697,39 +719,43 @@ class RelianceAutomation:
         """Save data to Google Sheets with proper header management and row replacement"""
         try:
             if not rows:
+                progress_queue.put({'type': 'warning', 'text': f"No rows to save for file ID {file_id}"})
                 return
             
             sheet_name = sheet_range.split('!')[0] if '!' in sheet_range else sheet_range
+            progress_queue.put({'type': 'info', 'text': f"Saving {len(rows)} rows to sheet {sheet_name} for file ID {file_id}"})
             
-            # Get existing headers and data
+            # Get existing headers
             existing_headers = self._get_sheet_headers(spreadsheet_id, sheet_name, progress_queue)
+            progress_queue.put({'type': 'info', 'text': f"Existing headers: {existing_headers}"})
             
             # Get all unique headers from new data
             new_headers = list(set().union(*(row.keys() for row in rows)))
+            progress_queue.put({'type': 'info', 'text': f"New headers: {new_headers}"})
             
             # Combine headers (existing + new unique ones)
-            if existing_headers:
-                all_headers = existing_headers.copy()
-                for header in new_headers:
-                    if header not in all_headers:
-                        all_headers.append(header)
-                
-                # Update headers if new ones were added
-                if len(all_headers) > len(existing_headers):
-                    self._update_headers(spreadsheet_id, sheet_name, all_headers, progress_queue)
-            else:
-                # No existing headers, create them
-                all_headers = new_headers
+            all_headers = existing_headers.copy() if existing_headers else []
+            for header in new_headers:
+                if header not in all_headers:
+                    all_headers.append(header)
+            
+            # Update headers if new ones were added
+            if all_headers != existing_headers:
                 self._update_headers(spreadsheet_id, sheet_name, all_headers, progress_queue)
             
             # Prepare values
             values = [[row.get(h, "") for h in all_headers] for row in rows]
+            progress_queue.put({'type': 'info', 'text': f"Prepared {len(values)} rows with {len(all_headers)} columns"})
             
             # Replace rows for this specific file
-            self._replace_rows_for_file(spreadsheet_id, sheet_name, file_id, all_headers, values, sheet_id, progress_queue)
+            success = self._replace_rows_for_file(spreadsheet_id, sheet_name, file_id, all_headers, values, sheet_id, progress_queue)
+            if success:
+                progress_queue.put({'type': 'success', 'text': f"Successfully saved {len(values)} rows for file {file_id}"})
+            else:
+                progress_queue.put({'type': 'error', 'text': f"Failed to save rows for file {file_id}"})
             
         except Exception as e:
-            progress_queue.put({'type': 'error', 'text': f"Failed to save to sheets: {str(e)}"})
+            progress_queue.put({'type': 'error', 'text': f"Failed to save to sheets for file ID {file_id}: {str(e)}"})
     
     def _get_sheet_headers(self, spreadsheet_id: str, sheet_name: str, progress_queue: queue.Queue) -> List[str]:
         """Get existing headers from Google Sheet"""
@@ -740,9 +766,11 @@ class RelianceAutomation:
                 majorDimension="ROWS"
             ).execute()
             values = result.get('values', [])
-            return values[0] if values else []
+            headers = values[0] if values else []
+            progress_queue.put({'type': 'info', 'text': f"Fetched {len(headers)} headers from sheet {sheet_name}"})
+            return headers
         except Exception as e:
-            progress_queue.put({'type': 'info', 'text': f"No existing headers found: {str(e)}"})
+            progress_queue.put({'type': 'info', 'text': f"No existing headers found in sheet {sheet_name}: {str(e)}"})
             return []
     
     def _update_headers(self, spreadsheet_id: str, sheet_name: str, headers: List[str], progress_queue: queue.Queue) -> bool:
@@ -755,10 +783,10 @@ class RelianceAutomation:
                 valueInputOption='USER_ENTERED',
                 body=body
             ).execute()
-            progress_queue.put({'type': 'info', 'text': f"Updated headers with {len(headers)} columns"})
+            progress_queue.put({'type': 'info', 'text': f"Updated headers with {len(headers)} columns in sheet {sheet_name}"})
             return True
         except Exception as e:
-            progress_queue.put({'type': 'error', 'text': f"Failed to update headers: {str(e)}"})
+            progress_queue.put({'type': 'error', 'text': f"Failed to update headers in sheet {sheet_name}: {str(e)}"})
             return False
     
     def _get_sheet_id(self, spreadsheet_id: str, sheet_name: str, progress_queue: queue.Queue) -> int:
@@ -767,11 +795,12 @@ class RelianceAutomation:
             metadata = self.sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
             for sheet in metadata.get('sheets', []):
                 if sheet['properties']['title'] == sheet_name:
+                    progress_queue.put({'type': 'info', 'text': f"Found sheet ID for {sheet_name}"})
                     return sheet['properties']['sheetId']
             progress_queue.put({'type': 'warning', 'text': f"Sheet '{sheet_name}' not found"})
             return 0
         except Exception as e:
-            progress_queue.put({'type': 'error', 'text': f"Failed to get sheet metadata: {str(e)}"})
+            progress_queue.put({'type': 'error', 'text': f"Failed to get sheet metadata for {sheet_name}: {str(e)}"})
             return 0
     
     def _get_sheet_data(self, spreadsheet_id: str, sheet_name: str, progress_queue: queue.Queue) -> List[List[str]]:
@@ -782,9 +811,11 @@ class RelianceAutomation:
                 range=sheet_name,
                 majorDimension="ROWS"
             ).execute()
-            return result.get('values', [])
+            data = result.get('values', [])
+            progress_queue.put({'type': 'info', 'text': f"Fetched {len(data)} rows from sheet {sheet_name}"})
+            return data
         except Exception as e:
-            progress_queue.put({'type': 'error', 'text': f"Failed to get sheet data: {str(e)}"})
+            progress_queue.put({'type': 'error', 'text': f"Failed to get sheet data for {sheet_name}: {str(e)}"})
             return []
     
     def _replace_rows_for_file(self, spreadsheet_id: str, sheet_name: str, file_id: str,
@@ -793,7 +824,7 @@ class RelianceAutomation:
         try:
             values = self._get_sheet_data(spreadsheet_id, sheet_name, progress_queue)
             if not values:
-                # No existing data, just append
+                progress_queue.put({'type': 'info', 'text': f"No existing data in sheet {sheet_name}, appending new rows"})
                 return self._append_to_google_sheet(spreadsheet_id, sheet_name, new_rows, progress_queue)
             
             current_headers = values[0]
@@ -840,7 +871,7 @@ class RelianceAutomation:
             return self._append_to_google_sheet(spreadsheet_id, sheet_name, new_rows, progress_queue)
             
         except Exception as e:
-            progress_queue.put({'type': 'error', 'text': f"Failed to replace rows: {str(e)}"})
+            progress_queue.put({'type': 'error', 'text': f"Failed to replace rows for file {file_id}: {str(e)}"})
             return False
     
     def _append_to_google_sheet(self, spreadsheet_id: str, range_name: str, values: List[List[Any]], progress_queue: queue.Queue) -> bool:
@@ -859,14 +890,14 @@ class RelianceAutomation:
                 ).execute()
                 
                 updated_cells = result.get('updates', {}).get('updatedCells', 0)
-                progress_queue.put({'type': 'info', 'text': f"Appended {updated_cells} cells to Google Sheet"})
+                progress_queue.put({'type': 'info', 'text': f"Appended {updated_cells} cells to Google Sheet {range_name}"})
                 return True
             except Exception as e:
                 if attempt < max_retries:
-                    progress_queue.put({'type': 'warning', 'text': f"Failed to append to Google Sheet (attempt {attempt}/{max_retries}): {str(e)}"})
+                    progress_queue.put({'type': 'warning', 'text': f"Failed to append to Google Sheet {range_name} (attempt {attempt}/{max_retries}): {str(e)}"})
                     time.sleep(wait_time)
                 else:
-                    progress_queue.put({'type': 'error', 'text': f"Failed to append to Google Sheet after {max_retries} attempts: {str(e)}"})
+                    progress_queue.put({'type': 'error', 'text': f"Failed to append to Google Sheet {range_name} after {max_retries} attempts: {str(e)}"})
                     return False
         return False
 
@@ -906,7 +937,7 @@ def main():
             'sender': "DONOTREPLY@ril.com",
             'search_term': "grn",
             'days_back': 7,
-            'max_results': 500,  # Fixed to match number_input max_value
+            'max_results': 500,
             'gdrive_folder_id': "1YH8bT01X0C03SbgFF8qWO49Tv85Xd5UU"
         }
     else:
@@ -986,7 +1017,7 @@ def main():
                 'sender': gmail_sender,
                 'search_term': gmail_search,
                 'days_back': gmail_days,
-                'max_results': min(gmail_max, 500),  # Cap at 500
+                'max_results': min(gmail_max, 500),
                 'gdrive_folder_id': gmail_folder
             }
             st.sidebar.success("Gmail settings updated!")

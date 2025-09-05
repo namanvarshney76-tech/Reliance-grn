@@ -503,6 +503,7 @@ class RelianceAutomation:
                 if file['id'] in self.processed_pdfs:
                     progress_queue.put({'type': 'info', 'text': f"Skipping already processed PDF {file['name']}"})
                     continue
+
                 
                 try:
                     progress_queue.put({'type': 'status', 'text': f"Processing PDF {i+1}/{len(pdf_files)}: {file['name']}"})

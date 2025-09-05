@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-"""
-Streamlit App for Reliance Automation Workflows
-Combines Gmail attachment downloader and PDF processor with real-time tracking
-"""
 import streamlit as st
 import os
 import json
@@ -13,8 +8,6 @@ import logging
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from io import StringIO
-import threading
-import queue
 import psutil
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
@@ -23,7 +16,6 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseUpload
 import io
-from streamlit_autorefresh import st_autorefresh
 
 # Try to import LlamaParse
 try:
@@ -31,14 +23,6 @@ try:
     LLAMA_AVAILABLE = True
 except ImportError:
     LLAMA_AVAILABLE = False
-
-# Configure Streamlit page
-st.set_page_config(
-    page_title="Reliance Automation",
-    page_icon="⚡",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
 
 class RelianceAutomation:
     def __init__(self):
@@ -80,18 +64,37 @@ class RelianceAutomation:
         except Exception as e:
             pass
     
-    def _check_memory(self, progress_queue: queue.Queue):
-        """Check memory usage to prevent crashes"""
-        process = psutil.Process()
-        mem_info = process.memory_info()
-        if mem_info.rss > 0.8 * psutil.virtual_memory().total:  # 80% of total memory
-            progress_queue.put({'type': 'error', 'text': "Memory usage too high, stopping to prevent crash"})
-            return False
-        return True
+    def log(self, message: str, level: str = "INFO"):
+        """Add log entry with timestamp to session state"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_entry = {
+            "timestamp": timestamp, 
+            "level": level.upper(), 
+            "message": message
+        }
+        
+        # Add to session state logs
+        if 'logs' not in st.session_state:
+            st.session_state.logs = []
+        
+        st.session_state.logs.append(log_entry)
+        
+        # Keep only last 100 logs to prevent memory issues
+        if len(st.session_state.logs) > 100:
+            st.session_state.logs = st.session_state.logs[-100:]
     
-    def authenticate_from_secrets(self, progress_bar, status_text, progress_queue: queue.Queue):
+    def get_logs(self):
+        """Get logs from session state"""
+        return st.session_state.get('logs', [])
+    
+    def clear_logs(self):
+        """Clear all logs"""
+        st.session_state.logs = []
+    
+    def authenticate_from_secrets(self, progress_bar, status_text):
         """Authenticate using Streamlit secrets with web-based OAuth flow"""
         try:
+            self.log("Starting authentication process...", "INFO")
             status_text.text("Authenticating with Google APIs...")
             progress_bar.progress(10)
             
@@ -107,10 +110,11 @@ class RelianceAutomation:
                         self.drive_service = build('drive', 'v3', credentials=creds)
                         self.sheets_service = build('sheets', 'v4', credentials=creds)
                         progress_bar.progress(100)
+                        self.log("Authentication successful using cached token!", "SUCCESS")
                         status_text.text("Authentication successful!")
                         return True
                 except Exception as e:
-                    progress_queue.put({'type': 'info', 'text': f"Cached token invalid, requesting new authentication: {str(e)}"})
+                    self.log(f"Cached token invalid, requesting new authentication: {str(e)}", "INFO")
             
             # Use Streamlit secrets for OAuth
             if "google" in st.secrets and "credentials_json" in st.secrets["google"]:
@@ -145,13 +149,14 @@ class RelianceAutomation:
                         self.sheets_service = build('sheets', 'v4', credentials=creds)
                         
                         progress_bar.progress(100)
+                        self.log("Authentication successful!", "SUCCESS")
                         status_text.text("Authentication successful!")
                         
                         # Clear the code from URL
                         st.query_params.clear()
                         return True
                     except Exception as e:
-                        progress_queue.put({'type': 'error', 'text': f"Authentication failed: {str(e)}"})
+                        self.log(f"Authentication failed: {str(e)}", "ERROR")
                         return False
                 else:
                     # Show authorization link
@@ -160,15 +165,15 @@ class RelianceAutomation:
                     st.info("Click the link above to authorize, you'll be redirected back automatically")
                     st.stop()
             else:
-                progress_queue.put({'type': 'error', 'text': "Google credentials missing in Streamlit secrets"})
+                self.log("Google credentials missing in Streamlit secrets", "ERROR")
                 return False
                 
         except Exception as e:
-            progress_queue.put({'type': 'error', 'text': f"Authentication failed: {str(e)}"})
+            self.log(f"Authentication failed: {str(e)}", "ERROR")
             return False
     
     def search_emails(self, sender: str = "", search_term: str = "",
-                     days_back: int = 7, max_results: int = 50, progress_queue: queue.Queue = None) -> List[Dict]:
+                     days_back: int = 7, max_results: int = 50) -> List[Dict]:
         """Search for emails with attachments"""
         try:
             # Build search query
@@ -191,7 +196,7 @@ class RelianceAutomation:
             query_parts.append(f"after:{start_date.strftime('%Y/%m/%d')}")
             
             query = " ".join(query_parts)
-            progress_queue.put({'type': 'info', 'text': f"Searching Gmail with query: {query}"})
+            self.log(f"Searching Gmail with query: {query}", "INFO")
             
             # Execute search
             result = self.gmail_service.users().messages().list(
@@ -199,80 +204,81 @@ class RelianceAutomation:
             ).execute()
             
             messages = result.get('messages', [])
-            progress_queue.put({'type': 'info', 'text': f"Gmail search returned {len(messages)} messages"})
+            self.log(f"Gmail search returned {len(messages)} messages", "INFO")
             
             # Debug: Show some email details
             if messages:
-                progress_queue.put({'type': 'info', 'text': "Sample emails found:"})
+                self.log("Sample emails found:", "INFO")
                 for i, msg in enumerate(messages[:3]):  # Show first 3 emails
                     try:
-                        email_details = self._get_email_details(msg['id'], progress_queue)
-                        progress_queue.put({'type': 'info', 'text': f" {i+1}. {email_details['subject']} from {email_details['sender']}"})
+                        email_details = self._get_email_details(msg['id'])
+                        self.log(f" {i+1}. {email_details['subject']} from {email_details['sender']}", "INFO")
                     except:
-                        progress_queue.put({'type': 'info', 'text': f" {i+1}. Email ID: {msg['id']}"})
+                        self.log(f" {i+1}. Email ID: {msg['id']}", "INFO")
             
             return messages
             
         except Exception as e:
-            progress_queue.put({'type': 'error', 'text': f"Email search failed: {str(e)}"})
+            self.log(f"Email search failed: {str(e)}", "ERROR")
             return []
     
-    def process_gmail_workflow(self, config: dict, progress_queue: queue.Queue):
+    def process_gmail_workflow(self, config: dict, progress_callback=None, status_callback=None):
         """Process Gmail attachment download workflow"""
         try:
-            if not self._check_memory(progress_queue):
-                progress_queue.put({'type': 'done', 'result': {'success': False, 'processed': 0}})
-                return
-            
-            progress_queue.put({'type': 'status', 'text': "Starting Gmail workflow..."})
-            progress_queue.put({'type': 'progress', 'value': 10})
+            if status_callback:
+                status_callback("Starting Gmail workflow...")
+            self.log("Starting Gmail workflow", "INFO")
+            if progress_callback:
+                progress_callback(10)
             
             # Search for emails
             emails = self.search_emails(
                 sender=config['sender'],
                 search_term=config['search_term'],
                 days_back=config['days_back'],
-                max_results=config['max_results'],
-                progress_queue=progress_queue
+                max_results=config['max_results']
             )
             
-            progress_queue.put({'type': 'progress', 'value': 25})
+            if progress_callback:
+                progress_callback(25)
             
             if not emails:
-                progress_queue.put({'type': 'warning', 'text': "No emails found matching criteria"})
-                progress_queue.put({'type': 'done', 'result': {'success': True, 'processed': 0}})
-                return
+                self.log("No emails found matching criteria", "WARNING")
+                return {'success': True, 'processed': 0}
             
-            progress_queue.put({'type': 'status', 'text': f"Found {len(emails)} emails. Processing attachments..."})
-            progress_queue.put({'type': 'info', 'text': f"Found {len(emails)} emails matching criteria"})
+            if status_callback:
+                status_callback(f"Found {len(emails)} emails. Processing attachments...")
+            self.log(f"Found {len(emails)} emails matching criteria", "INFO")
             
             # Create base folder in Drive
             base_folder_name = "Gmail_Attachments"
-            base_folder_id = self._create_drive_folder(base_folder_name, config.get('gdrive_folder_id'), progress_queue)
+            base_folder_id = self._create_drive_folder(base_folder_name, config.get('gdrive_folder_id'))
             
             if not base_folder_id:
-                progress_queue.put({'type': 'error', 'text': "Failed to create base folder in Google Drive"})
-                progress_queue.put({'type': 'done', 'result': {'success': False, 'processed': 0}})
-                return
+                self.log("Failed to create base folder in Google Drive", "ERROR")
+                return {'success': False, 'processed': 0}
             
-            progress_queue.put({'type': 'progress', 'value': 50})
+            if progress_callback:
+                progress_callback(50)
             
             processed_count = 0
             total_attachments = 0
             
             for i, email in enumerate(emails):
                 if email['id'] in self.processed_emails:
-                    progress_queue.put({'type': 'info', 'text': f"Skipping already processed email {email['id']}"})
+                    self.log(f"Skipping already processed email ID: {email['id']}", "INFO")
                     continue
                 
                 try:
-                    progress_queue.put({'type': 'status', 'text': f"Processing email {i+1}/{len(emails)}"})
+                    if status_callback:
+                        status_callback(f"Processing email {i+1}/{len(emails)}")
                     
-                    email_details = self._get_email_details(email['id'], progress_queue)
+                    # Get email details
+                    email_details = self._get_email_details(email['id'])
                     subject = email_details.get('subject', 'No Subject')[:50]
                     sender = email_details.get('sender', 'Unknown')
                     
-                    progress_queue.put({'type': 'info', 'text': f"Processing email: {subject} from {sender}"})
+                    self.log(f"Processing email: {subject} from {sender}", "INFO")
                     
                     # Get full message with payload
                     message = self.gmail_service.users().messages().get(
@@ -280,40 +286,43 @@ class RelianceAutomation:
                     ).execute()
                     
                     if not message or not message.get('payload'):
-                        progress_queue.put({'type': 'warning', 'text': f"No payload found for email: {subject}"})
+                        self.log(f"No payload found for email: {subject}", "WARNING")
                         continue
                     
                     # Extract attachments
                     attachment_count = self._extract_attachments_from_email(
-                        email['id'], message['payload'], sender, config, base_folder_id, progress_queue
+                        email['id'], message['payload'], config, base_folder_id
                     )
                     
                     total_attachments += attachment_count
                     if attachment_count > 0:
                         processed_count += 1
-                        progress_queue.put({'type': 'success', 'text': f"Found {attachment_count} attachments in: {subject}"})
+                        self.processed_emails.add(email['id'])
+                        self._save_processed_state()
+                        self.log(f"Found {attachment_count} attachments in: {subject}", "SUCCESS")
                     else:
-                        progress_queue.put({'type': 'info', 'text': f"No matching attachments in: {subject}"})
+                        self.log(f"No matching attachments in: {subject}", "INFO")
                     
-                    # Mark as processed
-                    self.processed_emails.add(email['id'])
-                    self._save_processed_state()
-                    
-                    progress = 50 + (i + 1) / len(emails) * 45
-                    progress_queue.put({'type': 'progress', 'value': int(progress)})
+                    if progress_callback:
+                        progress = 50 + (i + 1) / len(emails) * 45
+                        progress_callback(int(progress))
                     
                 except Exception as e:
-                    progress_queue.put({'type': 'error', 'text': f"Failed to process email {email.get('id', 'unknown')}: {str(e)}"})
+                    self.log(f"Failed to process email {email.get('id', 'unknown')}: {str(e)}", "ERROR")
             
-            progress_queue.put({'type': 'progress', 'value': 100})
-            progress_queue.put({'type': 'status', 'text': f"Gmail workflow completed! Processed {total_attachments} attachments from {processed_count} emails"})
-            progress_queue.put({'type': 'done', 'result': {'success': True, 'processed': total_attachments}})
+            if progress_callback:
+                progress_callback(100)
+            if status_callback:
+                status_callback(f"Gmail workflow completed! Processed {total_attachments} attachments from {processed_count} emails")
+            self.log(f"Gmail workflow completed! Processed {total_attachments} attachments from {processed_count} emails", "SUCCESS")
+            
+            return {'success': True, 'processed': total_attachments}
             
         except Exception as e:
-            progress_queue.put({'type': 'error', 'text': f"Gmail workflow failed: {str(e)}"})
-            progress_queue.put({'type': 'done', 'result': {'success': False, 'processed': 0}})
+            self.log(f"Gmail workflow failed: {str(e)}", "ERROR")
+            return {'success': False, 'processed': 0}
     
-    def _get_email_details(self, message_id: str, progress_queue: queue.Queue) -> Dict:
+    def _get_email_details(self, message_id: str) -> Dict:
         """Get email details including sender and subject"""
         try:
             message = self.gmail_service.users().messages().get(
@@ -332,10 +341,10 @@ class RelianceAutomation:
             return details
             
         except Exception as e:
-            progress_queue.put({'type': 'error', 'text': f"Failed to get email details for {message_id}: {str(e)}"})
+            self.log(f"Failed to get email details for {message_id}: {str(e)}", "ERROR")
             return {'id': message_id, 'sender': 'Unknown', 'subject': 'Unknown', 'date': ''}
     
-    def _create_drive_folder(self, folder_name: str, parent_folder_id: Optional[str] = None, progress_queue: queue.Queue = None) -> str:
+    def _create_drive_folder(self, folder_name: str, parent_folder_id: Optional[str] = None) -> str:
         """Create a folder in Google Drive"""
         try:
             # Check if folder already exists
@@ -363,21 +372,20 @@ class RelianceAutomation:
                 fields='id'
             ).execute()
             
-            progress_queue.put({'type': 'info', 'text': f"Created folder: {folder_name}"})
             return folder.get('id')
             
         except Exception as e:
-            progress_queue.put({'type': 'error', 'text': f"Failed to create folder {folder_name}: {str(e)}"})
+            self.log(f"Failed to create folder {folder_name}: {str(e)}", "ERROR")
             return ""
     
-    def _extract_attachments_from_email(self, message_id: str, payload: Dict, sender: str, config: dict, base_folder_id: str, progress_queue: queue.Queue) -> int:
+    def _extract_attachments_from_email(self, message_id: str, payload: Dict, config: dict, base_folder_id: str) -> int:
         """Extract attachments from email with proper folder structure"""
         processed_count = 0
         
         if "parts" in payload:
             for part in payload["parts"]:
                 processed_count += self._extract_attachments_from_email(
-                    message_id, part, sender, config, base_folder_id, progress_queue
+                    message_id, part, config, base_folder_id
                 )
         elif payload.get("filename") and "attachmentId" in payload.get("body", {}):
             filename = payload.get("filename", "")
@@ -391,100 +399,105 @@ class RelianceAutomation:
                 
                 file_data = base64.urlsafe_b64decode(att["data"].encode("UTF-8"))
                 
-                # Create folder structure: Gmail_Attachments -> Sender -> Date
-                sender_folder_id = self._create_drive_folder(sender, base_folder_id, progress_queue)
+                # Create nested folder structure: Gmail_Attachments -> search_term -> file_type
+                search_term = config.get('search_term', 'all-attachments')
+                search_folder_name = search_term if search_term else "all-attachments"
+                file_type_folder = self._classify_extension(filename)
                 
-                date_folder_name = datetime.now().strftime("%Y-%m-%d")
-                date_folder_id = self._create_drive_folder(date_folder_name, sender_folder_id, progress_queue)
+                # Create search term folder
+                search_folder_id = self._create_drive_folder(search_folder_name, base_folder_id)
                 
-                # Upload file
-                file_metadata = {
-                    'name': filename,
-                    'parents': [date_folder_id]
-                }
+                # Create file type folder within search folder
+                type_folder_id = self._create_drive_folder(file_type_folder, search_folder_id)
                 
-                media = MediaIoBaseUpload(io.BytesIO(file_data), mimetype='application/octet-stream')
+                # Clean filename but do not add prefix
+                clean_filename = self._sanitize_filename(filename)
+                final_filename = clean_filename
                 
-                file = self.drive_service.files().create(
-                    body=file_metadata,
-                    media_body=media,
-                    fields='id'
-                ).execute()
-                
-                progress_queue.put({'type': 'success', 'text': f"Uploaded {filename} to Drive folder {date_folder_name}"})
-                processed_count += 1
+                # Check if file already exists
+                if not self._file_exists_in_folder(final_filename, type_folder_id):
+                    # Upload to Drive
+                    file_metadata = {
+                        'name': final_filename,
+                        'parents': [type_folder_id]
+                    }
+                    
+                    media = MediaIoBaseUpload(
+                        io.BytesIO(file_data),
+                        mimetype='application/octet-stream',
+                        resumable=True
+                    )
+                    
+                    self.drive_service.files().create(
+                        body=file_metadata,
+                        media_body=media,
+                        fields='id'
+                    ).execute()
+                    
+                    self.log(f"Uploaded: {final_filename}", "INFO")
+                    processed_count = 1
+                else:
+                    self.log(f"File already exists, skipping: {final_filename}", "INFO")
                 
             except Exception as e:
-                progress_queue.put({'type': 'error', 'text': f"Failed to process attachment {filename}: {str(e)}"})
+                self.log(f"Failed to process attachment {filename}: {str(e)}", "ERROR")
         
         return processed_count
     
-    def get_existing_drive_ids(self, spreadsheet_id: str, sheet_range: str, progress_queue: queue.Queue) -> set:
-        """Get set of existing drive_file_id from Google Sheet"""
-        try:
-            result = self.sheets_service.spreadsheets().values().get(
-                spreadsheetId=spreadsheet_id,
-                range=sheet_range,
-                majorDimension="ROWS"
-            ).execute()
-            
-            values = result.get('values', [])
-            if not values:
-                return set()
-            
-            headers = values[0]
-            if "drive_file_id" not in headers:
-                progress_queue.put({'type': 'warning', 'text': "No 'drive_file_id' column found in sheet"})
-                return set()
-            
-            id_index = headers.index("drive_file_id")
-            existing_ids = {row[id_index] for row in values[1:] if len(row) > id_index and row[id_index]}
-            
-            progress_queue.put({'type': 'info', 'text': f"Found {len(existing_ids)} existing file IDs in sheet"})
-            return existing_ids
-            
-        except Exception as e:
-            progress_queue.put({'type': 'error', 'text': f"Failed to get existing file IDs: {str(e)}"})
-            return set()
+    def _sanitize_filename(self, filename: str) -> str:
+        """Clean up filenames to be safe for all operating systems"""
+        import re
+        cleaned = re.sub(r'[<>:"/\\|?*]', '_', filename)
+        if len(cleaned) > 100:
+            name_parts = cleaned.split('.')
+            if len(name_parts) > 1:
+                extension = name_parts[-1]
+                base_name = '.'.join(name_parts[:-1])
+                cleaned = f"{base_name[:95]}.{extension}"
+            else:
+                cleaned = cleaned[:100]
+        return cleaned
     
-    def process_pdf_workflow(self, config: dict, progress_queue: queue.Queue):
-        """Process PDF workflow with LlamaParse"""
-        if not LLAMA_AVAILABLE:
-            progress_queue.put({'type': 'error', 'text': "LlamaParse not available. Please install with: pip install llama-cloud-services"})
-            progress_queue.put({'type': 'done', 'result': {'success': False, 'processed': 0, 'rows_added': 0}})
-            return
+    def _classify_extension(self, filename: str) -> str:
+        """Categorize file by extension"""
+        if not filename or '.' not in filename:
+            return "Other"
+            
+        ext = filename.split(".")[-1].lower()
         
+        type_map = {
+            "pdf": "PDFs",
+            "doc": "Documents", "docx": "Documents", "txt": "Documents",
+            "xls": "Spreadsheets", "xlsx": "Spreadsheets", "csv": "Spreadsheets",
+            "jpg": "Images", "jpeg": "Images", "png": "Images", "gif": "Images",
+            "ppt": "Presentations", "pptx": "Presentations",
+            "zip": "Archives", "rar": "Archives", "7z": "Archives",
+        }
+        
+        return type_map.get(ext, "Other")
+    
+    def _file_exists_in_folder(self, filename: str, folder_id: str) -> bool:
+        """Check if file already exists in folder"""
         try:
-            if not self._check_memory(progress_queue):
-                progress_queue.put({'type': 'done', 'result': {'success': False, 'processed': 0, 'rows_added': 0}})
-                return
+            query = f"name='{filename}' and '{folder_id}' in parents and trashed=false"
+            existing = self.drive_service.files().list(q=query, fields='files(id, name)').execute()
+            files = existing.get('files', [])
+            return len(files) > 0
+        except:
+            return False
+    
+    def process_pdf_workflow(self, config: dict, progress_callback=None, status_callback=None):
+        """Process PDF workflow with LlamaParse"""
+        try:
+            if not LLAMA_AVAILABLE:
+                self.log("LlamaParse not available. Install with: pip install llama-cloud-services", "ERROR")
+                return {'success': False, 'processed': 0}
             
-            progress_queue.put({'type': 'status', 'text': "Starting PDF workflow..."})
-            progress_queue.put({'type': 'progress', 'value': 10})
-            
-            # List PDFs
-            pdf_files = self._list_drive_files(config['drive_folder_id'], config['days_back'], progress_queue)
-            
-            # Filter existing if skip_existing
-            if config.get('skip_existing', True):
-                existing_ids = self.get_existing_drive_ids(config['spreadsheet_id'], config['sheet_range'], progress_queue)
-                pdf_files = [f for f in pdf_files if f['id'] not in existing_ids]
-                progress_queue.put({'type': 'info', 'text': f"After filtering, {len(pdf_files)} PDFs to process"})
-            
-            # Limit max_files
-            max_files = config.get('max_files', None)
-            if max_files is not None:
-                pdf_files = pdf_files[:max_files]
-                progress_queue.put({'type': 'info', 'text': f"Limited to {len(pdf_files)} PDFs after max_files limit"})
-            
-            progress_queue.put({'type': 'progress', 'value': 25})
-            
-            if not pdf_files:
-                progress_queue.put({'type': 'warning', 'text': "No PDF files found in folder"})
-                progress_queue.put({'type': 'done', 'result': {'success': True, 'processed': 0, 'rows_added': 0}})
-                return
-            
-            progress_queue.put({'type': 'status', 'text': f"Found {len(pdf_files)} PDFs. Processing..."})
+            if status_callback:
+                status_callback("Starting PDF processing workflow...")
+            self.log("Starting PDF processing workflow...", "INFO")
+            if progress_callback:
+                progress_callback(20)
             
             # Setup LlamaParse
             os.environ["LLAMA_CLOUD_API_KEY"] = config['llama_api_key']
@@ -492,146 +505,138 @@ class RelianceAutomation:
             agent = extractor.get_agent(name=config['llama_agent'])
             
             if agent is None:
-                progress_queue.put({'type': 'error', 'text': f"Could not find LlamaParse agent '{config['llama_agent']}'"})
-                progress_queue.put({'type': 'done', 'result': {'success': False, 'processed': 0, 'rows_added': 0}})
-                return
+                self.log(f"Could not find agent '{config['llama_agent']}'. Check LlamaParse dashboard.", "ERROR")
+                return {'success': False, 'processed': 0}
+            
+            if progress_callback:
+                progress_callback(40)
+            
+            # List PDF files from Drive
+            pdf_files = self._list_drive_files(config['drive_folder_id'], config['days_back'])
+            
+            if not pdf_files:
+                self.log("No PDF files found in the specified folder", "WARNING")
+                return {'success': True, 'processed': 0}
+            
+            if status_callback:
+                status_callback(f"Found {len(pdf_files)} PDF files. Processing...")
+            self.log(f"Found {len(pdf_files)} PDF files. Processing...", "INFO")
+            
+            # Get sheet info
+            sheet_name = config['sheet_range'].split('!')[0]
             
             processed_count = 0
-            rows_added = 0
-            
             for i, file in enumerate(pdf_files):
                 if file['id'] in self.processed_pdfs:
-                    progress_queue.put({'type': 'info', 'text': f"Skipping already processed PDF {file['name']}"})
+                    self.log(f"Skipping already processed PDF: {file['name']}", "INFO")
                     continue
-
                 
                 try:
-                    progress_queue.put({'type': 'status', 'text': f"Processing PDF {i+1}/{len(pdf_files)}: {file['name']}"})
+                    if status_callback:
+                        status_callback(f"Processing PDF {i+1}/{len(pdf_files)}: {file['name']}")
+                    self.log(f"Processing PDF {i+1}/{len(pdf_files)}: {file['name']}", "INFO")
                     
                     # Download PDF
-                    pdf_data = self._download_from_drive(file['id'], progress_queue)
+                    pdf_data = self._download_from_drive(file['id'], file['name'])
                     if not pdf_data:
-                        progress_queue.put({'type': 'warning', 'text': f"Failed to download {file['name']}"})
                         continue
                     
+                    # Process with LlamaParse
                     with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
                         temp_file.write(pdf_data)
                         temp_path = temp_file.name
                     
-                    # Extract with LlamaParse
-                    result = self._safe_extract(agent, temp_path, progress_queue)
+                    result = agent.extract(temp_path)
                     extracted_data = result.data
-                    
                     os.unlink(temp_path)
                     
                     # Process extracted data
                     rows = self._process_extracted_data(extracted_data, file)
-                    
                     if rows:
-                        self._save_to_sheets(config['spreadsheet_id'], config['sheet_range'], rows, progress_queue)
-                        rows_added += len(rows)
+                        # Save to Google Sheets
+                        self._save_to_sheets(config['spreadsheet_id'], sheet_name, rows, file['id'], sheet_id=self._get_sheet_id(config['spreadsheet_id'], sheet_name))
                         processed_count += 1
-                        progress_queue.put({'type': 'success', 'text': f"Processed {file['name']} - added {len(rows)} rows"})
-                    else:
-                        progress_queue.put({'type': 'info', 'text': f"No data extracted from {file['name']}"})
+                        self.processed_pdfs.add(file['id'])
+                        self._save_processed_state()
                     
-                    # Mark as processed
-                    self.processed_pdfs.add(file['id'])
-                    self._save_processed_state()
-                    
-                    progress = 25 + (i + 1) / len(pdf_files) * 75
-                    progress_queue.put({'type': 'progress', 'value': int(progress)})
+                    if progress_callback:
+                        progress = 40 + (i + 1) / len(pdf_files) * 55
+                        progress_callback(int(progress))
                     
                 except Exception as e:
-                    progress_queue.put({'type': 'error', 'text': f"Failed to process {file['name']}: {str(e)}"})
+                    self.log(f"Failed to process PDF {file['name']}: {str(e)}", "ERROR")
             
-            progress_queue.put({'type': 'progress', 'value': 100})
-            progress_queue.put({'type': 'done', 'result': {'success': True, 'processed': processed_count, 'rows_added': rows_added}})
+            if progress_callback:
+                progress_callback(100)
+            if status_callback:
+                status_callback(f"PDF workflow completed! Processed {processed_count} PDFs")
+            self.log(f"PDF workflow completed! Processed {processed_count} PDFs", "SUCCESS")
+            
+            return {'success': True, 'processed': processed_count}
             
         except Exception as e:
-            progress_queue.put({'type': 'error', 'text': f"PDF workflow failed: {str(e)}"})
-            progress_queue.put({'type': 'done', 'result': {'success': False, 'processed': 0, 'rows_added': 0}})
+            self.log(f"PDF workflow failed: {str(e)}", "ERROR")
+            return {'success': False, 'processed': 0}
     
-    def _list_drive_files(self, folder_id: str, days_back: int = 7, progress_queue: queue.Queue = None) -> List[Dict]:
+    def _list_drive_files(self, folder_id: str, days_back: int) -> List[Dict]:
         """List PDF files in Drive folder"""
         try:
-            start_datetime = datetime.utcnow() - timedelta(days=days_back)
+            start_datetime = datetime.utcnow() - timedelta(days=days_back - 1)
             start_str = start_datetime.strftime('%Y-%m-%dT00:00:00Z')
+            query = f"'{folder_id}' in parents and mimeType='application/pdf' and trashed=false and createdTime >= '{start_str}'"
             
-            query = f"'{folder_id}' in parents and mimeType='application/pdf' and trashed=false and createdTime > '{start_str}'"
-            
-            files = []
+            all_files = []
             page_token = None
-            
             while True:
                 results = self.drive_service.files().list(
                     q=query,
-                    fields="nextPageToken, files(id, name, createdTime)",
+                    fields="nextPageToken, files(id, name, mimeType, createdTime, modifiedTime)",
+                    orderBy="createdTime desc",
+                    pageSize=1000,
                     pageToken=page_token
                 ).execute()
                 
-                files.extend(results.get('files', []))
-                page_token = results.get('nextPageToken')
-                if not page_token:
+                files = results.get('files', [])
+                all_files.extend(files)
+                
+                page_token = results.get('nextPageToken', None)
+                if page_token is None:
                     break
             
-            progress_queue.put({'type': 'info', 'text': f"Found {len(files)} PDF files in folder"})
-            return files
-            
+            return all_files
         except Exception as e:
-            progress_queue.put({'type': 'error', 'text': f"Failed to list Drive files: {str(e)}"})
+            self.log(f"Failed to list files: {str(e)}", "ERROR")
             return []
     
-    def _download_from_drive(self, file_id: str, progress_queue: queue.Queue) -> bytes:
+    def _download_from_drive(self, file_id: str, file_name: str) -> bytes:
         """Download file from Drive"""
         try:
             request = self.drive_service.files().get_media(fileId=file_id)
-            file_data = request.execute()
-            return file_data
+            return request.execute()
         except Exception as e:
-            progress_queue.put({'type': 'error', 'text': f"Failed to download file {file_id}: {str(e)}"})
+            self.log(f"Failed to download {file_name}: {str(e)}", "ERROR")
             return b""
     
-    def _safe_extract(self, agent, file_path: str, progress_queue: queue.Queue, retries: int = 3, wait_time: int = 2):
-        """Retry-safe extraction"""
-        for attempt in range(1, retries + 1):
-            try:
-                return agent.extract(file_path)
-            except Exception as e:
-                if attempt < retries:
-                    progress_queue.put({'type': 'warning', 'text': f"Extraction attempt {attempt} failed: {str(e)} - retrying..."})
-                    time.sleep(wait_time)
-                else:
-                    raise e
-    
     def _process_extracted_data(self, extracted_data: Dict, file_info: Dict) -> List[Dict]:
-        """Process extracted data into rows"""
+        """Process extracted data from LlamaParse based on Reliance JSON structure"""
         rows = []
         items = []
         
+        # Handle the provided JSON structure
         if "items" in extracted_data:
             items = extracted_data["items"]
             for item in items:
-                item["po_number"] = self._get_value(extracted_data, ["purchase_order_number", "po_number", "PO No"])
-                item["vendor_invoice_number"] = self._get_value(extracted_data, ["supplier_bill_number", "vendor_invoice_number", "invoice_number"])
-                item["supplier"] = self._get_value(extracted_data, ["supplier", "vendor", "Supplier Name"])
-                item["shipping_address"] = self._get_value(extracted_data, ["Shipping Address", "receiver_address", "shipping_address"])
-                item["grn_date"] = self._get_value(extracted_data, ["delivered_on", "grn_date"])
-                item["source_file"] = file_info['name']
-                item["processed_date"] = time.strftime("%Y-%m-%d %H:%M:%S")
-                item["drive_file_id"] = file_info['id']
-        elif "product_items" in extracted_data:
-            items = extracted_data["product_items"]
-            for item in items:
-                item["po_number"] = self._get_value(extracted_data, ["purchase_order_number", "po_number", "PO No"])
-                item["vendor_invoice_number"] = self._get_value(extracted_data, ["supplier_bill_number", "vendor_invoice_number", "invoice_number"])
-                item["supplier"] = self._get_value(extracted_data, ["supplier", "vendor", "Supplier Name"])
-                item["shipping_address"] = self._get_value(extracted_data, ["Shipping Address", "receiver_address", "shipping_address"])
-                item["grn_date"] = self._get_value(extracted_data, ["delivered_on", "grn_date"])
+                item["po_number"] = self._get_value(extracted_data, ["po_number", "purchase_order_number", "PO No"])
+                item["vendor_invoice_number"] = self._get_value(extracted_data, ["vendor_invoice_number", "invoice_number", "inv_no", "Invoice No"])
+                item["supplier"] = self._get_value(extracted_data, ["Supplier Name", "supplier", "vendor"])
+                item["shipping_address"] = self._get_value(extracted_data, ["delivery_address", "shipping_address", "receiver_address"])
+                item["grn_date"] = self._get_value(extracted_data, ["grn_date", "delivered_on"])
+                item["grn_number"] = self._get_value(extracted_data, ["grn_number"])
                 item["source_file"] = file_info['name']
                 item["processed_date"] = time.strftime("%Y-%m-%d %H:%M:%S")
                 item["drive_file_id"] = file_info['id']
         else:
+            self.log(f"Skipping (no 'items' key found): {file_info['name']}", "WARNING")
             return rows
         
         # Clean items and add to rows
@@ -648,16 +653,14 @@ class RelianceAutomation:
                 return data[key]
         return default
     
-    def _save_to_sheets(self, spreadsheet_id: str, sheet_range: str, rows: List[Dict], progress_queue: queue.Queue):
-        """Save data to Google Sheets with proper header management (append only, no replacement)"""
+    def _save_to_sheets(self, spreadsheet_id: str, sheet_name: str, rows: List[Dict], file_id: str, sheet_id: int):
+        """Save data to Google Sheets with proper header management and row replacement"""
         try:
             if not rows:
                 return
             
-            sheet_name = sheet_range.split('!')[0] if '!' in sheet_range else sheet_range
-            
             # Get existing headers and data
-            existing_headers = self._get_sheet_headers(spreadsheet_id, sheet_name, progress_queue)
+            existing_headers = self._get_sheet_headers(spreadsheet_id, sheet_name)
             
             # Get all unique headers from new data
             new_headers = list(set().union(*(row.keys() for row in rows)))
@@ -671,20 +674,22 @@ class RelianceAutomation:
                 
                 # Update headers if new ones were added
                 if len(all_headers) > len(existing_headers):
-                    self._update_headers(spreadsheet_id, sheet_name, all_headers, progress_queue)
+                    self._update_headers(spreadsheet_id, sheet_name, all_headers)
             else:
                 # No existing headers, create them
                 all_headers = new_headers
-                self._update_headers(spreadsheet_id, sheet_name, all_headers, progress_queue)
+                self._update_headers(spreadsheet_id, sheet_name, all_headers)
             
-            # Append new rows
+            # Prepare values
             values = [[row.get(h, "") for h in all_headers] for row in rows]
-            self._append_to_google_sheet(spreadsheet_id, sheet_range, values, progress_queue)
+            
+            # Replace rows for this specific file
+            self._replace_rows_for_file(spreadsheet_id, sheet_name, file_id, all_headers, values, sheet_id)
             
         except Exception as e:
-            progress_queue.put({'type': 'error', 'text': f"Failed to save to sheets: {str(e)}"})
+            self.log(f"Failed to save to sheets: {str(e)}", "ERROR")
     
-    def _get_sheet_headers(self, spreadsheet_id: str, sheet_name: str, progress_queue: queue.Queue) -> List[str]:
+    def _get_sheet_headers(self, spreadsheet_id: str, sheet_name: str) -> List[str]:
         """Get existing headers from Google Sheet"""
         try:
             result = self.sheets_service.spreadsheets().values().get(
@@ -695,10 +700,10 @@ class RelianceAutomation:
             values = result.get('values', [])
             return values[0] if values else []
         except Exception as e:
-            progress_queue.put({'type': 'info', 'text': f"No existing headers found: {str(e)}"})
+            self.log(f"No existing headers found: {str(e)}", "INFO")
             return []
     
-    def _update_headers(self, spreadsheet_id: str, sheet_name: str, headers: List[str], progress_queue: queue.Queue) -> bool:
+    def _update_headers(self, spreadsheet_id: str, sheet_name: str, headers: List[str]) -> bool:
         """Update the header row with new columns"""
         try:
             body = {'values': [headers]}
@@ -708,13 +713,95 @@ class RelianceAutomation:
                 valueInputOption='USER_ENTERED',
                 body=body
             ).execute()
-            progress_queue.put({'type': 'info', 'text': f"Updated headers with {len(headers)} columns"})
+            self.log(f"Updated headers with {len(headers)} columns", "INFO")
             return True
         except Exception as e:
-            progress_queue.put({'type': 'error', 'text': f"Failed to update headers: {str(e)}"})
+            self.log(f"Failed to update headers: {str(e)}", "ERROR")
             return False
     
-    def _append_to_google_sheet(self, spreadsheet_id: str, range_name: str, values: List[List[Any]], progress_queue: queue.Queue) -> bool:
+    def _get_sheet_id(self, spreadsheet_id: str, sheet_name: str) -> int:
+        """Get the numeric sheet ID for the given sheet name"""
+        try:
+            metadata = self.sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+            for sheet in metadata.get('sheets', []):
+                if sheet['properties']['title'] == sheet_name:
+                    return sheet['properties']['sheetId']
+            self.log(f"Sheet '{sheet_name}' not found", "WARNING")
+            return 0
+        except Exception as e:
+            self.log(f"Failed to get sheet metadata: {str(e)}", "ERROR")
+            return 0
+    
+    def _get_sheet_data(self, spreadsheet_id: str, sheet_name: str) -> List[List[str]]:
+        """Get all data from the sheet"""
+        try:
+            result = self.sheets_service.spreadsheets().values().get(
+                spreadsheetId=spreadsheet_id,
+                range=sheet_name,
+                majorDimension="ROWS"
+            ).execute()
+            return result.get('values', [])
+        except Exception as e:
+            self.log(f"Failed to get sheet data: {str(e)}", "ERROR")
+            return []
+    
+    def _replace_rows_for_file(self, spreadsheet_id: str, sheet_name: str, file_id: str,
+                             headers: List[str], new_rows: List[List[Any]], sheet_id: int) -> bool:
+        """Delete existing rows for the file if any, and append new rows"""
+        try:
+            values = self._get_sheet_data(spreadsheet_id, sheet_name)
+            if not values:
+                # No existing data, just append
+                return self._append_to_google_sheet(spreadsheet_id, sheet_name, new_rows)
+            
+            current_headers = values[0]
+            data_rows = values[1:]
+            
+            # Find file_id column
+            try:
+                file_id_col = current_headers.index('drive_file_id')
+            except ValueError:
+                self.log("No 'drive_file_id' column found, appending new rows", "INFO")
+                return self._append_to_google_sheet(spreadsheet_id, sheet_name, new_rows)
+            
+            # Find rows to delete (matching file_id)
+            rows_to_delete = []
+            for idx, row in enumerate(data_rows, 2):  # Start from row 2 (after header)
+                if len(row) > file_id_col and row[file_id_col] == file_id:
+                    rows_to_delete.append(idx)
+            
+            # Delete existing rows for this file
+            if rows_to_delete:
+                rows_to_delete.sort(reverse=True)  # Delete from bottom to top
+                requests = []
+                for row_idx in rows_to_delete:
+                    requests.append({
+                        'deleteDimension': {
+                            'range': {
+                                'sheetId': sheet_id,
+                                'dimension': 'ROWS',
+                                'startIndex': row_idx - 1,  # 0-indexed
+                                'endIndex': row_idx
+                            }
+                        }
+                    })
+                
+                if requests:
+                    body = {'requests': requests}
+                    self.sheets_service.spreadsheets().batchUpdate(
+                        spreadsheetId=spreadsheet_id,
+                        body=body
+                    ).execute()
+                    self.log(f"Deleted {len(rows_to_delete)} existing rows for file {file_id}", "INFO")
+            
+            # Append new rows
+            return self._append_to_google_sheet(spreadsheet_id, sheet_name, new_rows)
+            
+        except Exception as e:
+            self.log(f"Failed to replace rows: {str(e)}", "ERROR")
+            return False
+    
+    def _append_to_google_sheet(self, spreadsheet_id: str, range_name: str, values: List[List[Any]]) -> bool:
         """Append data to a Google Sheet with retry mechanism"""
         max_retries = 3
         wait_time = 2
@@ -723,44 +810,32 @@ class RelianceAutomation:
             try:
                 body = {'values': values}
                 result = self.sheets_service.spreadsheets().values().append(
-                    spreadsheetId=spreadsheet_id, 
+                    spreadsheetId=spreadsheet_id,
                     range=range_name,
-                    valueInputOption='USER_ENTERED', 
+                    valueInputOption='USER_ENTERED',
                     body=body
                 ).execute()
                 
                 updated_cells = result.get('updates', {}).get('updatedCells', 0)
-                progress_queue.put({'type': 'info', 'text': f"Appended {updated_cells} cells to Google Sheet"})
+                self.log(f"Appended {updated_cells} cells to Google Sheet", "INFO")
                 return True
             except Exception as e:
                 if attempt < max_retries:
-                    progress_queue.put({'type': 'warning', 'text': f"Failed to append to Google Sheet (attempt {attempt}/{max_retries}): {str(e)}"})
+                    self.log(f"Failed to append to Google Sheet (attempt {attempt}/{max_retries}): {str(e)}", "WARNING")
                     time.sleep(wait_time)
                 else:
-                    progress_queue.put({'type': 'error', 'text': f"Failed to append to Google Sheet after {max_retries} attempts: {str(e)}"})
+                    self.log(f"Failed to append to Google Sheet after {max_retries} attempts: {str(e)}", "ERROR")
                     return False
         return False
 
-def run_workflow_in_background(automation, workflow_type, gmail_config, pdf_config, progress_queue):
-    """Run the selected workflow in background, sending updates to queue"""
-    try:
-        if workflow_type == "gmail":
-            automation.process_gmail_workflow(gmail_config, progress_queue)
-        elif workflow_type == "pdf":
-            automation.process_pdf_workflow(pdf_config, progress_queue)
-        elif workflow_type == "combined":
-            progress_queue.put({'type': 'info', 'text': "Running combined workflow..."})
-            progress_queue.put({'type': 'status', 'text': "Step 1: Gmail Attachment Download"})
-            automation.process_gmail_workflow(gmail_config, progress_queue)
-            time.sleep(2)  # Small delay between steps
-            progress_queue.put({'type': 'status', 'text': "Step 2: PDF Processing"})
-            automation.process_pdf_workflow(pdf_config, progress_queue)
-            progress_queue.put({'type': 'success', 'text': "Combined workflow completed successfully!"})
-    except Exception as e:
-        progress_queue.put({'type': 'error', 'text': f"Workflow execution failed: {str(e)}"})
-        progress_queue.put({'type': 'done', 'result': {'success': False, 'processed': 0, 'rows_added': 0}})
-
 def main():
+    st.set_page_config(
+        page_title="Reliance Automation",
+        page_icon="⚡",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+    
     st.title("⚡ Reliance Automation Dashboard")
     st.markdown("Automate Gmail attachment downloads and PDF processing workflows")
     
@@ -781,25 +856,20 @@ def main():
             'llama_agent': "Reliance Agent",
             'spreadsheet_id': "1zlJaRur0K50ZLFQhxxmvfFVA3l4Whpe9XWgi1E-HFhg",
             'sheet_range': "reliancegrn",
-            'days_back': 1,
-            'max_files': 50,
-            'skip_existing': True
+            'days_back': 1
         }
     
-    # Initialize workflow state
-    if 'workflow_state' not in st.session_state:
-        st.session_state.workflow_state = {
-            'running': False,
-            'type': None,
-            'progress': 0,
-            'status': '',
-            'logs': [],
-            'result': None,
-            'thread': None,
-            'queue': queue.Queue()
-        }
+    # Initialize workflow running state
+    if 'workflow_running' not in st.session_state:
+        st.session_state.workflow_running = False
     
-    # Configuration section in sidebar
+    # Initialize automation instance
+    if 'automation' not in st.session_state:
+        st.session_state.automation = RelianceAutomation()
+    
+    automation = st.session_state.automation
+    
+    # Sidebar configuration
     st.sidebar.header("Configuration")
     
     with st.sidebar.form("gmail_config_form"):
@@ -830,8 +900,6 @@ def main():
         pdf_sheet_id = st.text_input("Spreadsheet ID", value=st.session_state.pdf_config['spreadsheet_id'])
         pdf_sheet_range = st.text_input("Sheet Range", value=st.session_state.pdf_config['sheet_range'])
         pdf_days = st.number_input("PDF Days Back", value=st.session_state.pdf_config['days_back'], min_value=1)
-        pdf_max_files = st.number_input("Max PDFs to Process", value=st.session_state.pdf_config.get('max_files', 50), min_value=1)
-        pdf_skip_existing = st.checkbox("Skip Existing Files", value=st.session_state.pdf_config.get('skip_existing', True))
         
         pdf_submit = st.form_submit_button("Update PDF Settings")
         
@@ -842,162 +910,283 @@ def main():
                 'llama_agent': pdf_agent,
                 'spreadsheet_id': pdf_sheet_id,
                 'sheet_range': pdf_sheet_range,
-                'days_back': pdf_days,
-                'max_files': pdf_max_files,
-                'skip_existing': pdf_skip_existing
+                'days_back': pdf_days
             }
             st.success("PDF settings updated!")
     
-    # Add a separator
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### Execute Workflows")
-    st.sidebar.info("Configure settings above, then choose a workflow to run")
+    # Sidebar authentication
+    st.sidebar.subheader("🔐 Authentication")
+    auth_status = st.sidebar.empty()
     
-    # Main content area - workflow buttons
-    st.header("Choose Workflow")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        if st.button("Gmail Workflow Only", use_container_width=True, 
-                    disabled=st.session_state.workflow_state['running']):
-            st.session_state.workflow_state['type'] = "gmail"
-    
-    with col2:
-        if st.button("PDF Workflow Only", use_container_width=True, 
-                    disabled=st.session_state.workflow_state['running']):
-            st.session_state.workflow_state['type'] = "pdf"
-    
-    with col3:
-        if st.button("Combined Workflow", use_container_width=True, 
-                    disabled=st.session_state.workflow_state['running']):
-            st.session_state.workflow_state['type'] = "combined"
-    
-    # Show current configuration preview
-    if not st.session_state.workflow_state['type'] and not st.session_state.workflow_state['running']:
-        st.header("Current Configuration")
+    if not automation.gmail_service or not automation.drive_service:
+        if st.sidebar.button("🚀 Authenticate with Google", type="primary"):
+            progress_bar = st.sidebar.progress(0)
+            status_text = st.sidebar.empty()
+            
+            success = automation.authenticate_from_secrets(progress_bar, status_text)
+            if success:
+                auth_status.success("✅ Authenticated successfully!")
+                st.sidebar.success("Ready to process workflows!")
+            else:
+                auth_status.error("❌ Authentication failed")
+            
+            progress_bar.empty()
+            status_text.empty()
+    else:
+        auth_status.success("✅ Already authenticated")
         
-        col1, col2 = st.columns(2)
+        # Clear authentication button
+        if st.sidebar.button("🔄 Re-authenticate"):
+            if 'oauth_token' in st.session_state:
+                del st.session_state.oauth_token
+            st.session_state.automation = RelianceAutomation()
+            st.rerun()
+    
+    # Main tabs
+    tab1, tab2, tab3, tab4 = st.tabs(["📧 Gmail Workflow", "📄 PDF Workflow", "🔗 Combined Workflow", "📋 Logs & Status"])
+    
+    # Tab 1: Gmail Workflow
+    with tab1:
+        st.header("📧 Gmail Attachment Downloader")
+        st.markdown("Download attachments from Gmail and organize them in Google Drive")
         
+        if not automation.gmail_service or not automation.drive_service:
+            st.warning("⚠️ Please authenticate first using the sidebar")
+        else:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("Current Configuration")
+                st.json(st.session_state.gmail_config)
+            
+            with col2:
+                st.subheader("Description")
+                st.info("💡 **How it works:**\n"
+                        "1. Searches Gmail for emails with attachments\n"
+                        "2. Creates organized folder structure in Drive\n"
+                        "3. Downloads and saves attachments by type\n"
+                        "4. Avoids duplicates automatically")
+            
+            # Start button
+            if st.button("🚀 Start Gmail Workflow", type="primary", disabled=st.session_state.workflow_running, key="start_gmail"):
+                st.session_state.workflow_running = True
+                try:
+                    progress_container = st.container()
+                    with progress_container:
+                        st.subheader("📊 Processing Status")
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        
+                        def update_progress(value):
+                            progress_bar.progress(value)
+                        
+                        def update_status(message):
+                            status_text.text(message)
+                        
+                        result = automation.process_gmail_workflow(
+                            st.session_state.gmail_config,
+                            progress_callback=update_progress,
+                            status_callback=update_status
+                        )
+                        
+                        if result['success']:
+                            st.success(f"✅ Workflow completed! Processed {result['processed']} attachments.")
+                        else:
+                            st.error("❌ Workflow failed. Check logs.")
+                finally:
+                    st.session_state.workflow_running = False
+    
+    # Tab 2: PDF Workflow
+    with tab2:
+        st.header("📄 PDF Processor")
+        st.markdown("Extract data from PDFs using LlamaParse and save to Google Sheets")
+        
+        if not LLAMA_AVAILABLE:
+            st.error("❌ LlamaParse not available. Please install: `pip install llama-cloud-services`")
+        elif not automation.drive_service or not automation.sheets_service:
+            st.warning("⚠️ Please authenticate first using the sidebar")
+        else:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("Current Configuration")
+                display_pdf_config = st.session_state.pdf_config.copy()
+                display_pdf_config['llama_api_key'] = "*" * len(display_pdf_config['llama_api_key'])
+                st.json(display_pdf_config)
+            
+            with col2:
+                st.subheader("Description")
+                st.info("💡 **How it works:**\n"
+                        "1. Lists PDFs in Drive folder\n"
+                        "2. Processes each with LlamaParse\n"
+                        "3. Extracts structured data\n"
+                        "4. Appends to Google Sheets\n"
+                        "5. Skips already processed files")
+            
+            # Start button
+            if st.button("🚀 Start PDF Workflow", type="primary", disabled=st.session_state.workflow_running, key="start_pdf"):
+                st.session_state.workflow_running = True
+                try:
+                    progress_container = st.container()
+                    with progress_container:
+                        st.subheader("📊 Processing Status")
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        
+                        def update_progress(value):
+                            progress_bar.progress(value)
+                        
+                        def update_status(message):
+                            status_text.text(message)
+                        
+                        result = automation.process_pdf_workflow(
+                            st.session_state.pdf_config,
+                            progress_callback=update_progress,
+                            status_callback=update_status
+                        )
+                        
+                        if result['success']:
+                            st.success(f"✅ Workflow completed! Processed {result['processed']} PDFs.")
+                        else:
+                            st.error("❌ Workflow failed. Check logs.")
+                finally:
+                    st.session_state.workflow_running = False
+    
+    # Tab 3: Combined Workflow
+    with tab3:
+        st.header("🔗 Combined Workflow")
+        st.markdown("Run Gmail download followed by PDF processing")
+        
+        if not automation.gmail_service or not automation.drive_service or not automation.sheets_service:
+            st.warning("⚠️ Please authenticate first using the sidebar")
+        elif not LLAMA_AVAILABLE:
+            st.error("❌ LlamaParse not available. Please install: `pip install llama-cloud-services`")
+        else:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("Current Configurations")
+                st.json(st.session_state.gmail_config)
+                display_pdf_config = st.session_state.pdf_config.copy()
+                display_pdf_config['llama_api_key'] = "*" * len(display_pdf_config['llama_api_key'])
+                st.json(display_pdf_config)
+            
+            with col2:
+                st.subheader("Description")
+                st.info("💡 **How it works:**\n"
+                        "1. Run Gmail attachment download\n"
+                        "2. Then process new PDFs\n"
+                        "3. Update Google Sheets")
+            
+            # Start button
+            if st.button("🚀 Start Combined Workflow", type="primary", disabled=st.session_state.workflow_running, key="start_combined"):
+                st.session_state.workflow_running = True
+                try:
+                    progress_container = st.container()
+                    with progress_container:
+                        st.subheader("📊 Processing Status")
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        
+                        def update_progress(value):
+                            progress_bar.progress(value)
+                        
+                        def update_status(message):
+                            status_text.text(message)
+                        
+                        # Run Gmail
+                        update_status("Running Gmail workflow...")
+                        gmail_result = automation.process_gmail_workflow(
+                            st.session_state.gmail_config,
+                            progress_callback=update_progress,
+                            status_callback=update_status
+                        )
+                        
+                        if not gmail_result['success']:
+                            st.error("❌ Gmail part failed. Stopping.")
+                            return
+                        
+                        # Run PDF
+                        update_status("Running PDF workflow...")
+                        pdf_result = automation.process_pdf_workflow(
+                            st.session_state.pdf_config,
+                            progress_callback=update_progress,
+                            status_callback=update_status
+                        )
+                        
+                        if pdf_result['success']:
+                            st.success(f"✅ Combined completed! Gmail: {gmail_result['processed']} attachments, PDF: {pdf_result['processed']} files.")
+                        else:
+                            st.error("❌ PDF part failed. Check logs.")
+                finally:
+                    st.session_state.workflow_running = False
+    
+    # Tab 4: Logs & Status
+    with tab4:
+        st.header("📋 System Logs & Status")
+        
+        col1, col2, col3 = st.columns(3)
         with col1:
-            st.subheader("Gmail Configuration")
-            st.json(st.session_state.gmail_config)
-        
-        with col2:
-            st.subheader("PDF Configuration")
-            # Hide API key in display
-            display_pdf_config = st.session_state.pdf_config.copy()
-            display_pdf_config['llama_api_key'] = "*" * len(display_pdf_config['llama_api_key'])
-            st.json(display_pdf_config)
-        
-        st.info("Configure your settings in the sidebar, then select a workflow above to begin automation")
-        return
-    
-    # Run workflows using session state configurations
-    if st.session_state.workflow_state['type'] and not st.session_state.workflow_state['running']:
-        # Create automation instance
-        automation = RelianceAutomation()
-        
-        # Authentication section
-        st.header("Authentication")
-        auth_progress = st.progress(0)
-        auth_status = st.empty()
-        
-        if automation.authenticate_from_secrets(auth_progress, auth_status, st.session_state.workflow_state['queue']):
-            st.success("Authentication successful!")
-            
-            # Workflow execution section
-            st.header("Workflow Execution")
-            
-            # Start the background thread
-            thread = threading.Thread(
-                target=run_workflow_in_background,
-                args=(automation, st.session_state.workflow_state['type'], 
-                      st.session_state.gmail_config, st.session_state.pdf_config, 
-                      st.session_state.workflow_state['queue'])
-            )
-            thread.start()
-            
-            # Update workflow state
-            st.session_state.workflow_state['running'] = True
-            st.session_state.workflow_state['thread'] = thread
-            st.session_state.workflow_state['logs'] = []
-            st.session_state.workflow_state['progress'] = 0
-            st.session_state.workflow_state['status'] = "Initializing..."
-    
-    # Handle running workflows
-    if st.session_state.workflow_state['running']:
-        # Enable auto-refresh every 1 second while running
-        st_autorefresh(interval=1000, key="workflow_refresh")
-        
-        # Poll the queue for updates
-        while not st.session_state.workflow_state['queue'].empty():
-            msg = st.session_state.workflow_state['queue'].get()
-            if msg['type'] == 'progress':
-                st.session_state.workflow_state['progress'] = msg['value']
-            elif msg['type'] == 'status':
-                st.session_state.workflow_state['status'] = msg['text']
-            elif msg['type'] == 'info':
-                st.session_state.workflow_state['logs'].append(f"INFO: {msg['text']}")
-            elif msg['type'] == 'warning':
-                st.session_state.workflow_state['logs'].append(f"WARNING: {msg['text']}")
-            elif msg['type'] == 'error':
-                st.session_state.workflow_state['logs'].append(f"ERROR: {msg['text']}")
-            elif msg['type'] == 'success':
-                st.session_state.workflow_state['logs'].append(f"SUCCESS: {msg['text']}")
-            elif msg['type'] == 'done':
-                st.session_state.workflow_state['result'] = msg['result']
-                st.session_state.workflow_state['running'] = False
-        
-        # Progress tracking
-        main_progress = st.progress(st.session_state.workflow_state['progress'])
-        main_status = st.text(st.session_state.workflow_state['status'])
-        
-        # Log container
-        st.subheader("Real-time Logs")
-        log_container = st.empty()
-        log_container.text_area("Logs", "\n".join(st.session_state.workflow_state['logs'][-50:]), height=200)
-        
-        # Check if workflow is done
-        if not st.session_state.workflow_state['running']:
-            # Clean up thread
-            thread = st.session_state.workflow_state['thread']
-            if thread and thread.is_alive():
-                thread.join()
-            
-            # Show result summary
-            result = st.session_state.workflow_state['result']
-            if result and result['success']:
-                if 'rows_added' in result:
-                    st.success(f"{st.session_state.workflow_state['type'].capitalize()} workflow completed! Processed {result['processed']} items, added {result['rows_added']} rows")
-                else:
-                    st.success(f"{st.session_state.workflow_state['type'].capitalize()} workflow completed! Processed {result['processed']} items")
-                if st.session_state.workflow_state['type'] == "combined":
-                    st.balloons()
-            elif result:
-                st.error(f"{st.session_state.workflow_state['type'].capitalize()} workflow failed")
-            
-            # Reset button
-            if st.button("Reset Workflow"):
-                st.session_state.workflow_state['type'] = None
-                st.session_state.workflow_state['result'] = None
+            if st.button("🔄 Refresh Logs", key="refresh_logs"):
                 st.rerun()
+        with col2:
+            if st.button("🗑️ Clear Logs", key="clear_logs"):
+                automation.clear_logs()
+                st.success("Logs cleared!")
+                st.rerun()
+        with col3:
+            if st.checkbox("Auto-refresh (5s)", value=False, key="auto_refresh_logs"):
+                time.sleep(5)
+                st.rerun()
+        
+        # Display logs
+        logs = automation.get_logs()
+        
+        if logs:
+            st.subheader(f"Recent Activity ({len(logs)} entries)")
+            
+            # Show logs in reverse chronological order (newest first)
+            for log_entry in reversed(logs[-50:]):  # Show last 50 logs
+                timestamp = log_entry['timestamp']
+                level = log_entry['level']
+                message = log_entry['message']
+                
+                # Color coding based on log level
+                if level == "ERROR":
+                    st.error(f"🔴 **{timestamp}** - {message}")
+                elif level == "WARNING":
+                    st.warning(f"🟡 **{timestamp}** - {message}")
+                elif level == "SUCCESS":
+                    st.success(f"🟢 **{timestamp}** - {message}")
+                else:  # INFO
+                    st.info(f"ℹ️ **{timestamp}** - {message}")
+        else:
+            st.info("No logs available. Start a workflow to see activity logs here.")
+        
+        # System status
+        st.subheader("🔧 System Status")
+        status_cols = st.columns(2)
+        
+        with status_cols[0]:
+            st.metric("Authentication Status", 
+                      "✅ Connected" if automation.gmail_service else "❌ Not Connected")
+            st.metric("Workflow Status", 
+                      "🟡 Running" if st.session_state.workflow_running else "🟢 Idle")
+        
+        with status_cols[1]:
+            st.metric("LlamaParse Available", 
+                      "✅ Available" if LLAMA_AVAILABLE else "❌ Not Installed")
+            st.metric("Total Logs", len(logs))
 
-    # Reset all settings
+    # Reset all settings at bottom
     st.markdown("---")
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("Reset Workflow", use_container_width=True):
-            st.session_state.workflow_state['type'] = None
-            st.session_state.workflow_state['result'] = None
-            st.rerun()
-    with col2:
-        if st.button("Reset All Settings", use_container_width=True, type="secondary"):
-            for key in ['gmail_config', 'pdf_config', 'workflow_state']:
-                if key in st.session_state:
-                    del st.session_state[key]
-            if os.path.exists("processed_state.json"):
-                os.remove("processed_state.json")
-            st.rerun()
+    if st.button("Reset All Settings", type="secondary"):
+        for key in ['gmail_config', 'pdf_config', 'automation', 'workflow_running', 'logs', 'oauth_token']:
+            if key in st.session_state:
+                del st.session_state[key]
+        if os.path.exists("processed_state.json"):
+            os.remove("processed_state.json")
+        st.rerun()
 
 if __name__ == "__main__":
     main()

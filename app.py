@@ -23,7 +23,6 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseUpload
 import io
-from streamlit_autorefresh import st_autorefresh
 
 # Try to import LlamaParse
 try:
@@ -121,7 +120,7 @@ class RelianceAutomation:
                 flow = Flow.from_client_config(
                     client_config=creds_data,
                     scopes=combined_scopes,
-                    redirect_uri="https://reliancegrn.streamlit.app/"  # Update with your actual URL
+                    redirect_uri="https://reliancegrn.streamlit.app/"
                 )
                 
                 # Generate authorization URL
@@ -518,7 +517,7 @@ class RelianceAutomation:
             
             progress_queue.put({'type': 'status', 'text': f"Processing {len(new_pdfs)} new PDFs..."})
             
-            # Set up LlamaParse (assuming it's used here)
+            # Set up LlamaParse
             os.environ["LLAMA_CLOUD_API_KEY"] = config['llama_api_key']
             extractor = LlamaExtract()
             agent = extractor.get_agent(name=config['llama_agent'])
@@ -604,8 +603,7 @@ class RelianceAutomation:
             return None
     
     def _process_extracted_data(self, data: Any, file: Dict) -> List[Dict]:
-        """Process Llama extracted data into rows (placeholder - adjust based on actual structure)"""
-        # Assuming data is list of dicts or similar
+        """Process Llama extracted data into rows"""
         rows = []
         for item in data:
             row = item.copy()
@@ -914,6 +912,12 @@ def main():
         
         if st.session_state.workflow_state['running']:
             st.warning("Workflow is running...")
+        elif st.session_state.workflow_state['result']:
+            result = st.session_state.workflow_state['result']
+            if result['success']:
+                st.success(f"Gmail workflow completed! Processed {result['processed']} attachments")
+            else:
+                st.error("Gmail workflow failed. Check logs for details.")
         else:
             if st.button("Start Gmail Workflow", key="start_gmail", type="primary"):
                 st.session_state.workflow_state['type'] = "gmail"
@@ -933,6 +937,12 @@ def main():
         
         if st.session_state.workflow_state['running']:
             st.warning("Workflow is running...")
+        elif st.session_state.workflow_state['result']:
+            result = st.session_state.workflow_state['result']
+            if result['success']:
+                st.success(f"PDF workflow completed! Processed {result['processed']} PDFs, added {result.get('rows_added', 0)} rows")
+            else:
+                st.error("PDF workflow failed. Check logs for details.")
         else:
             if st.button("Start PDF Workflow", key="start_pdf", type="primary"):
                 st.session_state.workflow_state['type'] = "pdf"
@@ -953,6 +963,13 @@ def main():
         
         if st.session_state.workflow_state['running']:
             st.warning("Workflow is running...")
+        elif st.session_state.workflow_state['result']:
+            result = st.session_state.workflow_state['result']
+            if result['success']:
+                st.success(f"Combined workflow completed! Processed {result['processed']} items")
+                st.balloons()
+            else:
+                st.error("Combined workflow failed. Check logs for details.")
         else:
             if st.button("Start Combined Workflow", key="start_combined", type="primary"):
                 st.session_state.workflow_state['type'] = "combined"
@@ -978,7 +995,7 @@ def main():
         logs = st.session_state.workflow_state['logs']
         if logs:
             st.subheader(f"Recent Activity ({len(logs)} entries)")
-            for log_entry in reversed(logs):
+            for log_entry in reversed(logs[-50:]):
                 timestamp = log_entry['timestamp']
                 level = log_entry['level']
                 message = log_entry['message']
@@ -991,7 +1008,7 @@ def main():
                 else:
                     st.info(f"ℹ️ **{timestamp}** - {message}")
         else:
-            st.info("No logs available.")
+            st.info("No logs available. Start a workflow to see activity logs.")
     
     # Handle workflow execution
     if st.session_state.workflow_state['type'] and not st.session_state.workflow_state['running']:
@@ -1014,7 +1031,9 @@ def main():
             else:
                 st.error("Authentication failed")
                 st.session_state.workflow_state['type'] = None
-                return
+                st.session_state.workflow_state['result'] = None
+                st.rerun()
+            return
         
         # Start workflow
         automation = st.session_state.automation
@@ -1040,13 +1059,9 @@ def main():
         st.session_state.workflow_state['logs'] = []
         st.session_state.workflow_state['progress'] = 0
         st.session_state.workflow_state['status'] = "Initializing..."
-        st.rerun()
     
     # Handle running workflows
     if st.session_state.workflow_state['running']:
-        # Enable auto-refresh every 1 second while running
-        st_autorefresh(interval=1000, key="workflow_refresh")
-        
         # Poll the queue for updates
         while not st.session_state.workflow_state['queue'].empty():
             msg = st.session_state.workflow_state['queue'].get()
@@ -1078,23 +1093,13 @@ def main():
             if thread and thread.is_alive():
                 thread.join()
             
-            # Show result
-            result = st.session_state.workflow_state['result']
-            if result and result['success']:
-                st.success(f"{st.session_state.workflow_state['type'].capitalize()} workflow completed! Processed {result['processed']} items")
-                if st.session_state.workflow_state['type'] == "combined":
-                    st.balloons()
-            elif result:
-                st.error(f"{st.session_state.workflow_state['type'].capitalize()} workflow failed")
+            # Reset workflow state
+            st.session_state.workflow_state['type'] = None
+            st.session_state.workflow_state['authenticated'] = False
+            if 'automation' in st.session_state:
+                del st.session_state.automation
             
-            # Reset button
-            if st.button("Reset Workflow"):
-                st.session_state.workflow_state['type'] = None
-                st.session_state.workflow_state['result'] = None
-                st.session_state.workflow_state['authenticated'] = False
-                if 'automation' in st.session_state:
-                    del st.session_state.automation
-                st.rerun()
+            st.rerun()
 
     # Reset all settings
     st.markdown("---")

@@ -763,7 +763,12 @@ def main():
     """Main Streamlit application"""
     st.title("🤖 Reliance Automation Workflows")
     st.markdown("### Gmail to Drive & PDF to Excel Processing")
-    
+
+    # Initialize automation instance in session state at the start
+    if 'automation' not in st.session_state:
+        st.session_state.automation = RelianceAutomation()
+    automation = st.session_state.automation
+
     # Initialize session state for configuration
     if 'gmail_config' not in st.session_state:
         st.session_state.gmail_config = {
@@ -773,7 +778,7 @@ def main():
             'max_results': 1000,
             'gdrive_folder_id': "1YH8bT01X0C03SbgFF8qWO49Tv85Xd5UU"
         }
-    
+
     if 'pdf_config' not in st.session_state:
         st.session_state.pdf_config = {
             'drive_folder_id': "1CKPlXQcQsvGDWmpINVj8lpKI7G9VG1Yv",
@@ -785,8 +790,7 @@ def main():
             'max_files': 50,
             'skip_existing': True
         }
-    
-    # Initialize workflow state
+
     if 'workflow_state' not in st.session_state:
         st.session_state.workflow_state = {
             'running': False,
@@ -798,6 +802,7 @@ def main():
             'thread': None,
             'queue': queue.Queue()
         }
+
     
     # Sidebar configuration
     st.sidebar.header("Configuration")

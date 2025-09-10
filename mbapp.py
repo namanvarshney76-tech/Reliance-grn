@@ -908,8 +908,8 @@ def main():
     if 'pdf_config' not in st.session_state:
         st.session_state.pdf_config = {
             'drive_folder_id': "1JVEQGIVfQQEPHq62sc8rJZwrTpAVJYv1",
-            'llama_api_key': "llx-rK35vMeW6MVmM9nVpbfdMfiZZzRoBmrLsC3EfiCm1qamfQ5p",
-            'llama_agent': "Reliance Agent",
+            'llama_api_key': "llx-Nx6bhXkFhdZowot0UivYKloUTI4UYpp6tnW8kC6a0lkajLGW",
+            'llama_agent': "Milkbasket Agent",
             'spreadsheet_id': "1zlJaRur0K50ZLFQhxxmvfFVA3l4Whpe9XWgi1E-HFhg",
             'sheet_range': "mbgrn",
             'days_back': 1,

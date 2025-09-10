@@ -284,12 +284,12 @@ class RelianceAutomation:
                     subject = email_details.get('subject', 'No Subject')[:50]
                     sender = email_details.get('sender', 'Unknown')
                     
-                    # Differentiate based on '/' in the Inv part
-                    inv_match = re.search(r'against Inv: (.*?) -', email_details.get('subject', ''))
+                    # Differentiate based on '/' in the invoice number within "against Inv: ..."
+                    inv_match = re.search(r'against Inv: (\S+)', subject)
                     if inv_match:
-                        inv = inv_match.group(1)
-                        if '/' in inv:
-                            self.log(f"Skipping email (Health Factory - contains '/'): {subject}", "INFO")
+                        inv_number = inv_match.group(1)
+                        if '/' in inv_number:
+                            self.log(f"Skipping email (Health Factory - contains '/' in invoice): {subject}", "INFO")
                             continue
                     
                     self.log(f"Processing email: {subject} from {sender}", "INFO")
@@ -886,13 +886,13 @@ class RelianceAutomation:
 
 def main():
     st.set_page_config(
-        page_title="Milkbasket Automation",
+        page_title="Reliance Automation",
         page_icon="⚡",
         layout="wide",
         initial_sidebar_state="expanded"
     )
     
-    st.title("⚡ Milkbasket Automation Dashboard")
+    st.title("⚡ Reliance Automation Dashboard")
     st.markdown("Automate Gmail attachment downloads and PDF processing workflows")
     
     # Initialize session state for configuration
@@ -907,11 +907,11 @@ def main():
     
     if 'pdf_config' not in st.session_state:
         st.session_state.pdf_config = {
-            'drive_folder_id': "1oJsbr8Uq8BahFDUSUM98KMMu8pXRc5l5",
+            'drive_folder_id': "1JVEQGIVfQQEPHq62sc8rJZwrTpAVJYv1",
             'llama_api_key': "llx-rK35vMeW6MVmM9nVpbfdMfiZZzRoBmrLsC3EfiCm1qamfQ5p",
             'llama_agent': "Reliance Agent",
             'spreadsheet_id': "1zlJaRur0K50ZLFQhxxmvfFVA3l4Whpe9XWgi1E-HFhg",
-            'sheet_range': "mbgrn",
+            'sheet_range': "reliancegrn",
             'days_back': 1,
             'max_files': 50
         }

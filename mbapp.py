@@ -911,7 +911,7 @@ def main():
             'llama_api_key': "llx-rK35vMeW6MVmM9nVpbfdMfiZZzRoBmrLsC3EfiCm1qamfQ5p",
             'llama_agent': "Reliance Agent",
             'spreadsheet_id': "1zlJaRur0K50ZLFQhxxmvfFVA3l4Whpe9XWgi1E-HFhg",
-            'sheet_range': "reliancegrn",
+            'sheet_range': "mbgrn",
             'days_back': 1,
             'max_files': 50
         }

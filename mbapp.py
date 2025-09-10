@@ -886,13 +886,13 @@ class RelianceAutomation:
 
 def main():
     st.set_page_config(
-        page_title="Reliance Automation",
-        page_icon="⚡",
+        page_title="Milkbasket Automation",
+        page_icon="🥛",
         layout="wide",
         initial_sidebar_state="expanded"
     )
     
-    st.title("⚡ Reliance Automation Dashboard")
+    st.title("🥛 Milkbasket Automation Dashboard")
     st.markdown("Automate Gmail attachment downloads and PDF processing workflows")
     
     # Initialize session state for configuration
